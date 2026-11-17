@@ -1,0 +1,60 @@
+# Reel Maker
+
+A webpage that turns a landscape performance video into a polished vertical 1080×1920 reel for Instagram. Everything runs in the browser, so the video is never uploaded anywhere.
+
+## What it does
+
+- **Trim** to a start and end time (accepts `1:23` or `83`).
+- **Keeps the singer centered** by detecting the face in frames sampled every half second, then smoothing the crop path so it doesn't jitter. If no face is found, it uses the fallback position slider.
+- **Lyric captions** timed to the original video. Each line stays on screen until the next line starts.
+- **Title** shown over the first few seconds.
+- **Color and sharpness boost** (optional).
+- **Fades** in from and out to black.
+- **Vocal-friendly audio**: fades, light compression, and loudness normalization to about −14 LUFS, the level most platforms expect.
+
+## Run it locally
+
+From this folder:
+
+```bash
+python3 -m http.server 8000
+```
+
+Then open http://localhost:8000.
+
+## Put it online (free) with GitHub Pages
+
+1. Create a new repository on GitHub and push this folder to it.
+2. Go to **Settings → Pages**.
+3. Under **Build and deployment**, choose **Deploy from a branch**, select `main` and `/ (root)`, then save.
+4. Open the address GitHub shows, on your phone or computer.
+
+## Lyrics format
+
+One line per lyric, starting with the time in the original video:
+
+```
+0:12 First line of the song
+0:17 Second line
+0:22 Third line
+```
+
+Times are measured from the start of the original video, not from the trimmed clip.
+
+## Limits and notes
+
+- **Language:** captions use the bundled Poppins font, which covers the Latin alphabet. Hindi and other scripts need a font file that includes them, placed in `fonts/` and named in `app.js`. Romanized lyrics work now.
+- **Face tracking** uses MediaPipe's face detector, loaded from the internet the first time. It works best when the singer's face is clearly visible and reasonably large.
+- **Speed:** processing takes a while on phones, and long clips can run out of memory. Keep reels to about 30–60 seconds.
+- **Landscape only:** the crop assumes the source is wider than tall.
+- **Audio required:** videos with no audio track will fail at the audio step.
+- **Untested in a browser:** the ffmpeg commands were tested natively, and the caption, crop, and fade logic were tested with the same generator. The in-browser pieces (face detection and the ffmpeg.wasm build) have not been run in a real browser yet, so bug reports are welcome.
+- **Music rights:** covers of copyrighted songs can be muted or taken down on Instagram. Use Instagram's licensed music, original arrangements, or royalty-free tracks for the audio.
+
+## Files
+
+- `index.html`: the page layout.
+- `style.css`: styling.
+- `editor.js`: pure editing logic (crop path, captions, ffmpeg command). No browser code, so it can be tested separately.
+- `app.js`: browser glue: file input, face tracking, the ffmpeg engine, and the download.
+- `fonts/Poppins-Bold.ttf`: caption font (SIL Open Font License).

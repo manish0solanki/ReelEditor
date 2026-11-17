@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reel Maker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>Reel Maker</h1>
+    <p class="hint">Upload a landscape performance and get a polished vertical 1080×1920 reel for Instagram. Everything runs in your browser, so the video never leaves your device.</p>
+
+    <section class="card">
+      <label class="upload">
+        <span>Choose a video</span>
+        <input id="file" type="file" accept="video/*" />
+      </label>
+      <video id="preview" controls playsinline></video>
+      <p class="meta">Video length: <span id="duration">–</span> seconds</p>
+    </section>
+
+    <section class="card">
+      <h2>Trim</h2>
+      <div class="row">
+        <label>Start (m:ss or seconds)
+          <input id="start" type="text" value="0" />
+        </label>
+        <label>End (m:ss or seconds)
+          <input id="end" type="text" value="30" />
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Look</h2>
+      <label class="check"><input id="track" type="checkbox" checked /> Keep the singer centered (face tracking)</label>
+      <label class="slider">
+        Fallback crop position: <span id="posLabel">50</span>%
+        <input id="pos" type="range" min="0" max="100" value="50" />
+        <small>Used when tracking is off or no face is found.</small>
+      </label>
+      <label class="check"><input id="grade" type="checkbox" checked /> Color and sharpness boost</label>
+    </section>
+
+    <section class="card">
+      <h2>Text</h2>
+      <label>Song title (shows for the first 3–4 seconds)
+        <input id="title" type="text" placeholder="e.g. Tum Hi Ho" />
+      </label>
+      <label>Lyrics: one line per lyric, starting with its time in the original video
+        <textarea id="lyrics" rows="8" placeholder="0:12 First line of the song&#10;0:17 Second line&#10;0:22 Third line"></textarea>
+      </label>
+      <p id="lyricsWarn" class="warn" hidden></p>
+      <small>Use the Latin alphabet (for example, romanized Hindi). Other scripts may not display.</small>
+    </section>
+
+    <section class="card">
+      <button id="go" type="button">Make reel</button>
+    </section>
+
+    <section class="card" id="output" hidden>
+      <progress id="progress" value="0" max="1"></progress>
+      <p id="status" role="status"></p>
+      <video id="result" controls playsinline hidden></video>
+      <a id="download" class="button" download="reel.mp4" hidden>Download reel</a>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
