@@ -4,6 +4,7 @@ import { FFmpeg } from "./vendor/ffmpeg/index.js";
 import { dlog, openPanel } from "./debug.js";
 import { audioFeatures, repetitionCurve, findBestMoments } from "./moments.js";
 import { beatGrid, cutPlan, synthDrums, encodeWav } from "./beats.js";
+import { colorHistogram, groupFaces, followFace, tileRegions, mergeDetections } from "./faces.js";
 import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
   SAMPLE_STEP,
@@ -74,6 +75,9 @@ const els = {
   moments: $("moments"),
   trimNote: $("trimNote"),
   track: $("track"),
+  facePicker: $("facePicker"),
+  faceNote: $("faceNote"),
+  faces: $("faces"),
   pos: $("pos"),
   posLabel: $("posLabel"),
   grade: $("grade"),
@@ -356,47 +360,171 @@ function seekTo(video, time) {
   });
 }
 
-// Samples the video every SAMPLE_STEP seconds and finds the face in each frame.
-// Returns [{ t, c }] where c is the face centre along the crop axis (0..1), or null.
-async function trackSinger(video, startT, duration, geometry, srcW, srcH) {
-  const { FaceDetector, FilesetResolver } = await import(VISION_URL);
-  const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
-  const detector = await FaceDetector.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: FACE_MODEL, delegate: "CPU" },
-    runningMode: "IMAGE",
-  });
+// ---- Faces: detection, choosing who to follow, tracking ----
+let faceDetector = null;
+let faceTarget = null; // the person chosen in the face picker, or null for "largest face"
+let faceScanJob = null;
+let faceScanToken = 0;
+const FACE_SCAN_FRAMES = 8;
 
-  const scale = Math.min(1, 480 / Math.max(srcW, srcH));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(srcW * scale);
-  canvas.height = Math.round(srcH * scale);
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-
-  const count = Math.floor(duration / SAMPLE_STEP) + 1;
-  const samples = [];
-  video.pause();
-  try {
-    for (let i = 0; i < count; i++) {
-      const t = i * SAMPLE_STEP;
-      await seekTo(video, startT + t);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const { detections = [] } = detector.detect(canvas);
-      const area = (d) => d.boundingBox.width * d.boundingBox.height;
-      const best = detections.reduce((a, d) => (!a || area(d) > area(a) ? d : a), null);
-      let c = null;
-      if (best) {
-        const bb = best.boundingBox;
-        const cx = (bb.originX + bb.width / 2) / canvas.width;
-        const cy = (bb.originY + bb.height / 2) / canvas.height;
-        c = geometry.axis === "y" ? cy : cx;
-      }
-      samples.push({ t, c });
-      if (i % 10 === 0) setStatus(`Finding the singer… ${Math.round((100 * i) / count)}%`);
-    }
-  } finally {
-    detector.close();
+async function getFaceDetector() {
+  if (!faceDetector) {
+    const { FaceDetector, FilesetResolver } = await import(VISION_URL);
+    const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
+    faceDetector = await FaceDetector.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: FACE_MODEL, delegate: "CPU" },
+      runningMode: "IMAGE",
+    });
   }
-  return samples;
+  return faceDetector;
+}
+
+// Canvases the video regions are drawn into for detection, reused between frames.
+const TILE = 384;
+let tileCanvas = null;
+
+// Every face in the video's current frame, as { cx, cy, w, h } fractions of the frame, a score and a
+// colour histogram (and a thumbnail for the picker). The detector runs on the whole frame and on
+// overlapping square tiles, so faces filmed from a distance are found too.
+function detectFaces(detector, video, { thumbnails = false } = {}) {
+  const { videoWidth: W, videoHeight: H } = video;
+  if (!tileCanvas) {
+    tileCanvas = document.createElement("canvas");
+    tileCanvas.width = tileCanvas.height = TILE;
+  }
+  const ctx = tileCanvas.getContext("2d", { willReadFrequently: true });
+  const found = [];
+  for (const r of tileRegions(W, H)) {
+    // Each region is scaled into the TILE x TILE canvas (the whole frame keeps its shape).
+    const scale = TILE / Math.max(r.w, r.h);
+    const dw = Math.round(r.w * scale);
+    const dh = Math.round(r.h * scale);
+    ctx.clearRect(0, 0, TILE, TILE);
+    ctx.drawImage(video, r.x, r.y, r.w, r.h, 0, 0, dw, dh);
+    const { detections = [] } = detector.detect(tileCanvas);
+    if (!detections.length) continue;
+    const pixels = ctx.getImageData(0, 0, TILE, TILE).data;
+    for (const d of detections) {
+      const bb = d.boundingBox;
+      if (bb.originX + bb.width > dw + 2 || bb.originY + bb.height > dh + 2) continue; // in the blank margin
+      const det = {
+        cx: (r.x + (bb.originX + bb.width / 2) / scale) / W,
+        cy: (r.y + (bb.originY + bb.height / 2) / scale) / H,
+        w: bb.width / scale / W,
+        h: bb.height / scale / H,
+        score: d.categories?.[0]?.score ?? 0,
+        hist: colorHistogram(pixels, TILE, TILE, { x: bb.originX, y: bb.originY, w: bb.width, h: bb.height }),
+      };
+      if (thumbnails) {
+        // A square crop around the face with some margin, for the picker, taken from the full video frame.
+        const size = (Math.max(bb.width, bb.height) / scale) * 1.6;
+        const thumb = document.createElement("canvas");
+        thumb.width = thumb.height = 96;
+        thumb.getContext("2d").drawImage(video, det.cx * W - size / 2, det.cy * H - size / 2, size, size, 0, 0, 96, 96);
+        det.thumb = thumb.toDataURL("image/jpeg", 0.85);
+      }
+      found.push(det);
+    }
+  }
+  return mergeDetections(found);
+}
+
+function renderFacePicker(people) {
+  els.faces.textContent = "";
+  const options = [{ label: "Automatic", person: null }, ...people.map((p, i) => ({ label: `Person ${i + 1}`, person: p }))];
+  for (const { label, person } of options) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "face";
+    b.setAttribute("aria-pressed", String(faceTarget === person));
+    if (person) {
+      const img = document.createElement("img");
+      img.src = person.best.det.thumb;
+      img.alt = label;
+      b.append(img);
+    } else {
+      const auto = document.createElement("span");
+      auto.className = "auto";
+      auto.textContent = "★";
+      auto.setAttribute("aria-hidden", "true");
+      b.append(auto);
+    }
+    const name = document.createElement("span");
+    name.textContent = person ? label : "Largest face";
+    b.append(name);
+    b.addEventListener("click", () => {
+      faceTarget = person;
+      dlog("info", person ? `Following ${label} (around ${Math.round(person.cx * 100)}% across)` : "Following the largest face");
+      renderFacePicker(people);
+    });
+    els.faces.append(b);
+  }
+}
+
+// Looks at a few frames across the video for the people in it; offers a choice if there's more than one.
+async function scanFaces() {
+  const token = ++faceScanToken;
+  const video = els.preview;
+  const { videoWidth: srcW, videoHeight: srcH, duration } = video;
+  if (!els.track.checked || !inputFile || !srcW || !Number.isFinite(duration)) return;
+  els.facePicker.hidden = false;
+  els.faces.textContent = "";
+  els.faceNote.textContent = "Looking for faces…";
+  try {
+    const detector = await getFaceDetector();
+    const frames = [];
+    video.pause();
+    for (let i = 0; i < FACE_SCAN_FRAMES; i++) {
+      const t = duration * (0.05 + (0.9 * i) / (FACE_SCAN_FRAMES - 1));
+      await seekTo(video, t);
+      if (token !== faceScanToken) return;
+      frames.push({ t, dets: detectFaces(detector, video, { thumbnails: true }) });
+    }
+    await seekTo(video, 0);
+    const people = groupFaces(frames);
+    dlog("info", `Face scan: ${people.length} ${people.length === 1 ? "person" : "people"} (${frames.map((f) => f.dets.length).join("/")} faces in ${frames.length} frames)`);
+    if (people.length >= 2) {
+      els.faceNote.textContent = `${people.length} people found. Who should the camera follow?`;
+      renderFacePicker(people);
+    } else {
+      els.facePicker.hidden = true;
+    }
+  } catch (err) {
+    console.warn("Face scan failed", err);
+    if (token === faceScanToken) els.facePicker.hidden = true;
+  }
+}
+
+function startFaceScan() {
+  faceTarget = null;
+  els.facePicker.hidden = true;
+  faceScanJob = els.track.checked ? scanFaces() : null;
+}
+
+// Samples the video every SAMPLE_STEP seconds and finds the singer in each frame: the chosen person
+// if one was picked, otherwise the largest face. Returns [{ t, c }] where c is the face centre along
+// the crop axis (0..1), or null.
+async function trackSinger(video, startT, duration, geometry, srcW, srcH) {
+  const detector = await getFaceDetector();
+  const count = Math.floor(duration / SAMPLE_STEP) + 1;
+  const frames = [];
+  video.pause();
+  for (let i = 0; i < count; i++) {
+    const t = i * SAMPLE_STEP;
+    await seekTo(video, startT + t);
+    frames.push({ t, dets: detectFaces(detector, video) });
+    if (i % 10 === 0) setStatus(`Finding the singer… ${Math.round((100 * i) / count)}%`);
+  }
+  const along = (det) => (det ? (geometry.axis === "y" ? det.cy : det.cx) : null);
+  if (faceTarget) {
+    const path = followFace(frames, faceTarget);
+    dlog("info", `Following the chosen person: seen in ${path.filter((p) => p.det).length} of ${path.length} samples`);
+    return path.map((p) => ({ t: p.t, c: along(p.det) }));
+  }
+  return frames.map((f) => ({
+    t: f.t,
+    c: along(f.dets.reduce((a, d) => (!a || d.w * d.h > a.w * a.h ? d : a), null)),
+  }));
 }
 
 els.pos.addEventListener("input", () => {
@@ -600,6 +728,7 @@ els.file.addEventListener("change", () => {
     els.start.value = "0";
     els.end.value = String(Math.min(d, 45).toFixed(1));
     updateTrim();
+    startFaceScan();
   };
   setStatus("");
   els.output.hidden = true;
@@ -735,7 +864,6 @@ function updateSoundOptions() {
   const music = els.music.value;
   els.musicFileRow.hidden = music !== "file";
   els.musicVolRow.hidden = music === "none";
-  els.voiceVolRow.hidden = music === "none";
   els.musicVolLabel.textContent = els.musicVol.value;
   els.voiceVolLabel.textContent = els.voiceVol.value;
   try {
@@ -782,6 +910,11 @@ els.go.addEventListener("click", async () => {
     els.output.hidden = false;
     setStatus("Finishing finding the song…");
     await trimJob;
+    els.go.disabled = false;
+  }
+  if (faceScanJob) {
+    els.go.disabled = true;
+    await faceScanJob;
     els.go.disabled = false;
   }
 
@@ -845,7 +978,7 @@ els.go.addEventListener("click", async () => {
       captionStyle: els.captionStyle.value,
       noise: els.noise.value,
       noiseFloorDb: sound.noiseFloorDb,
-      voiceVolume: sound.music ? Number(els.voiceVol.value) / 100 : 1,
+      voiceVolume: Number(els.voiceVol.value) / 100,
       music: sound.music && { name: sound.music.name, volume: sound.music.volume, duck: sound.music.duck },
       closeups: sound.closeups,
     });
@@ -951,3 +1084,5 @@ if (MULTI_THREAD_SUPPORTED) {
     'The fast (multi-threaded) engine only runs on the <a href="/fast">fast-engine test page</a>.';
 }
 dlog("info", `App ready · engine choice: ${engineChoice()} · fast engine failed recently: ${multiThreadFailedRecently()}`);
+
+els.track.addEventListener("change", startFaceScan);

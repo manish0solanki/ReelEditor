@@ -49,6 +49,10 @@
     <section class="card">
       <h2>Look</h2>
       <label class="check"><input id="track" type="checkbox" checked /> Keep the singer centered (face tracking)</label>
+      <div id="facePicker" class="face-picker" hidden>
+        <p id="faceNote" class="meta"></p>
+        <div id="faces" class="faces" role="group" aria-label="Who to follow"></div>
+      </div>
       <label class="slider">
         <span class="slider-title">Fallback crop position: <span id="posLabel">50</span>%</span>
         <input id="pos" type="range" min="0" max="100" value="50" />
@@ -59,6 +63,11 @@
 
     <section class="card">
       <h2>Sound and music</h2>
+      <label class="slider" id="voiceVolRow">
+        <span class="slider-title">Clip volume: <span id="voiceVolLabel">100</span>%</span>
+        <input id="voiceVol" type="range" min="0" max="100" step="1" value="100" />
+        <small>The video's own sound. 0% mutes it, for example to keep only the music.</small>
+      </label>
       <label>Background noise
         <select id="noise">
           <option value="off">Leave as recorded</option>
@@ -83,10 +92,7 @@
         <input id="musicVol" type="range" min="0" max="100" value="35" />
         <small>The music is turned down automatically while you sing.</small>
       </label>
-      <label class="slider" id="voiceVolRow" hidden>
-        <span class="slider-title">Your performance's volume: <span id="voiceVolLabel">100</span>%</span>
-        <input id="voiceVol" type="range" min="0" max="100" value="100" />
-      </label>
+
       <label class="check"><input id="beatCuts" type="checkbox" /> Cut to the beat: switch between a wide shot and a close-up of the singer on the music's bars</label>
       <small>The beat comes from your music file if you add one, otherwise from your performance.</small>
     </section>

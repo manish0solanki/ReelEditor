@@ -320,7 +320,7 @@ export function buildCommand({
   captionStyle = "classic",
   noise = "off", // "off", "light" or "strong"
   noiseFloorDb = -60, // the clip's quiet floor, for tuning the noise reduction
-  voiceVolume = 1, // the performance's own sound, 0-1
+  voiceVolume = 1, // the clip's own sound, 0 (muted) to 1
   music = null, // { name, volume (0-1), duck: "strong" | "light" } to mix in a music file
   closeups = [], // [{ a, b }]: stretches shown as a close-up (beat cuts)
 }) {
@@ -393,7 +393,6 @@ export function buildCommand({
   const voice = [...noiseFilters(noise, noiseFloorDb), "afade=t=in:st=0:d=0.6"];
   if (duration > 2) voice.push(`afade=t=out:st=${fadeOutAt}:d=1`);
   voice.push("acompressor=threshold=0.125:ratio=3:attack=20:release=250");
-  if (voiceVolume !== 1) voice.push(`volume=${voiceVolume}`);
   const LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11";
 
   const inputs = ["-ss", String(start), "-i", inputName];
@@ -405,13 +404,15 @@ export function buildCommand({
     const fadeOut = Math.max(0, duration - 1.5).toFixed(2);
     const duck = music.duck === "light" ? "threshold=0.06:ratio=3" : "threshold=0.03:ratio=8";
     const graph =
-      `[0:a]${voice.join(",")},asplit[voice][key];` +
+      // With music, the clip's volume sets the balance before the mix (and the ducking follows it).
+      `[0:a]${[...voice, ...(voiceVolume !== 1 ? [`volume=${voiceVolume}`] : [])].join(",")},asplit[voice][key];` +
       `[1:a]aresample=48000,volume=${music.volume},afade=t=in:st=0:d=1,afade=t=out:st=${fadeOut}:d=1.5[music];` +
       `[music][key]sidechaincompress=${duck}:attack=15:release=350[ducked];` +
       `[voice][ducked]amix=inputs=2:duration=first:normalize=0,${LOUDNORM}[aout]`;
     audioArgs = ["-filter_complex", graph, "-map", "0:v:0", "-map", "[aout]"];
   } else {
-    audioArgs = ["-af", [...voice, LOUDNORM].join(",")];
+    // Without music, the clip's volume goes after loudnorm, which would otherwise undo it.
+    audioArgs = ["-af", [...voice, LOUDNORM, ...(voiceVolume !== 1 ? [`volume=${voiceVolume}`] : [])].join(",")];
   }
 
   const args = [

@@ -85,3 +85,16 @@ test("cutTrackTargets: face tracking moves both crops, the close-up keeping its 
   assert.equal(text.split("\n")[0], "0.00 crop@wide x 100+(100)*(t-0.00)/1.00, crop@close x 170+(100)*(t-0.00)/1.00;");
   assert.equal(text.split("\n")[1], "1.00 crop@wide x 200, crop@close x 270;");
 });
+
+test("clip volume: without music it's applied after loudnorm, so it isn't normalised away", () => {
+  const af = arg(buildCommand({ ...base, voiceVolume: 0.5 }).args, "-af");
+  assert.match(af, /loudnorm=[^,]*,volume=0\.5$/);
+  assert.match(arg(buildCommand({ ...base, voiceVolume: 0 }).args, "-af"), /,volume=0$/);
+  assert.doesNotMatch(arg(buildCommand(base).args, "-af"), /volume=/);
+});
+
+test("clip volume: with music it sets the balance before the mix", () => {
+  const graph = arg(buildCommand({ ...base, voiceVolume: 0.25, music: { name: "m.wav", volume: 0.35, duck: "light" } }).args, "-filter_complex");
+  assert.match(graph, /^\[0:a\][^;]*volume=0\.25,asplit\[voice\]\[key\];/);
+  assert.match(graph, /loudnorm=[^;]*\[aout\]$/);
+});

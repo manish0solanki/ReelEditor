@@ -7,7 +7,8 @@ A webpage that turns a landscape performance video into a polished vertical 1080
 - **Any orientation:** landscape, portrait, and tall phone videos all work.
 - **Trims to the song automatically:** listens to the video's sound, starts the reel 2 seconds before the singing begins, keeps any instrumental ending, and cuts the talking or silence after the song. The Start and End boxes are filled in so you can adjust them, or untick the option and set them yourself (accepts `1:23` or `83`).
 - **Best moment (optional):** tick "Find the best moment" and choose 15, 30, 45 or 60 seconds. The app suggests the top 3 moments with a score and the reasons, and uses the best one. You can tap another to use it instead. Moments score higher for being the part that repeats most (usually the chorus, found by comparing the song's pitch patterns), for continuous singing, for loudness and energy, and for applause during or just after them. The start and end are moved to nearby quiet points so the clip doesn't cut mid-phrase. Untick it for the normal edit of the whole song.
-- **Keeps the singer centered** by detecting the face in frames sampled every half second, then smoothing the crop path so it doesn't jitter. If no face is found, it uses the fallback position slider.
+- **Keeps the singer centered** by detecting faces in frames sampled every half second, then smoothing the crop path so it doesn't jitter. The detector also runs on overlapping square tiles of the frame, so a singer filmed from a few metres away is found too. If no face is found, it uses the fallback position slider.
+- **Choose who to follow:** when you pick a video, the app looks at 8 frames across it. If there's more than one person, it shows each face so you can tap who the camera should follow ("Largest face" is the default). The chosen person is followed by their look (face and hair colours) and position together, so it keeps the right person when people move or cross, and it holds still rather than jump to someone else while they're hidden.
 - **Animated lyric captions** timed to the original video, in three styles: **Bold pop** (2–3 big words at a time, the current word highlighted, each group popping in), **Karaoke** (the whole line, each word lighting up as it's sung), or **Classic** (the whole line). Long lines wrap automatically.
 - **Title** shown over the first few seconds.
 - **Color and sharpness boost** (optional).
@@ -16,6 +17,7 @@ A webpage that turns a landscape performance video into a polished vertical 1080
 - **Background noise reduction (optional):** *Reduce* or *Remove more* takes out steady noise such as fans, AC hum, hiss and room rumble. The app measures the video's own noise floor from its quietest moments and tunes ffmpeg's `afftdn` filter to it. In tests with noise under speech, *Reduce* removed about 12 dB and *Remove more* about 26 dB of noise, with the speech level within about 1 dB. It can't remove other people talking.
 - **Background music (optional):** either a **generated beat** (kick, snare and hi-hats synthesised in the browser, placed on your performance's own detected beats, so it follows your tempo and has no copyright issue), or **your own music file**, looped if it's short. The music fades in and out and is turned down automatically while you sing (side-chain ducking). Separate volume sliders for the music and the performance.
 - **Cut to the beat (optional):** finds the beats and bars (from your music file, or from the performance), then switches between a wide shot and a 1.3x close-up of the singer on bar lines, every 2-4 s, with face tracking in both. Without a clear beat it switches every 3 s.
+- **Clip volume:** a 0-100% slider for the video's own sound. 0% mutes it, for example to keep only the music.
 - **Vocal-friendly audio**: fades, light compression, and loudness normalization to about −14 LUFS, the level most platforms expect.
 
 ## Run it locally
@@ -84,6 +86,7 @@ Long lines wrap onto two lines automatically, and shrink a little if they still 
 
 - `index.html`: the page layout.
 - `style.css`: styling.
+- `faces.js`: telling people apart (colour fingerprints, grouping), following one person, tiles for small faces. No browser code.
 - `beats.js`: beat and bar detection, beat-synced cut plan, the generated drum track and WAV writing. No browser code.
 - `moments.js`: finding the best moment (chorus detection, scoring). No browser code.
 - `editor.js`: pure editing logic (crop path, captions, ffmpeg command). No browser code, so it can be tested separately.
