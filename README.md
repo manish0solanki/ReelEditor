@@ -14,6 +14,7 @@ A webpage that turns a landscape performance video into a polished vertical 1080
 - **Title** shown over the first few seconds.
 - **Color and sharpness boost** (optional).
 - **Fades** in from and out to black.
+- **Cover images:** "Find the best frames" looks at 24 frames between Start and End and scores each for sharpness, a clear face (the person you chose to follow, if you did), exposure and colour. It then makes three 1080x1920 covers from the best ones, from different moments and looking different from each other. Each cover is framed on the face, given a light colour boost and, if you like, the song title in bold. The text stays inside the part that Instagram's 4:5 profile grid shows. Each has a Download button; in Instagram, use "Add from camera roll" when editing the reel's cover.
 - **Timer while it builds:** shows time elapsed and about how long is left, then the total when it's done. It remembers how fast your device was, so later reels get an estimate straight away.
 - **B-roll (optional):** add up to 8 of your own clips or photos (crowd, venue, band, instrument). The app places about 2.5-second cutaways every ~12, 8 or 5 seconds, where there's least singing, on the bar lines, and never over the opening title or the ending. Each fades in and out over the performance, filled to 9:16, while the performance's sound continues and the captions stay on top. Clips play from their middle (a different part each time one is reused); photos slowly zoom.
 - **Background noise reduction (optional):** *Reduce* or *Remove more* takes out steady noise such as fans, AC hum, hiss and room rumble. The app measures the video's own noise floor from its quietest moments and tunes ffmpeg's `afftdn` filter to it. In tests with noise under speech, *Reduce* removed about 12 dB and *Remove more* about 26 dB of noise, with the speech level within about 1 dB. It can't remove other people talking.
@@ -97,6 +98,7 @@ Long lines wrap onto two lines automatically, and shrink a little if they still 
 
 - `index.html`: the page layout.
 - `style.css`: styling.
+- `thumbs.js`: scoring frames for cover images (sharpness, face, exposure, colour, variety) and framing them. No browser code.
 - `broll.js`: where the b-roll shots go. No browser code.
 - `faces.js`: telling people apart (colour fingerprints, grouping), following one person, tiles for small faces. No browser code.
 - `lyrics.js`, `translit.js`, `lyrics-worker.js`: writing lyrics from the singing (tidying Whisper's output, Devanagari to romanized Hindi, and the worker that runs Whisper).

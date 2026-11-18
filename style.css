@@ -683,3 +683,29 @@ progress::-moz-progress-bar { background: var(--gradient); border-radius: 999px;
 .broll-item .meta small { font-weight: 400; }
 
 .broll-item button { padding: 6px 10px; font-size: 0.82rem; }
+
+/* ---- Cover images --------------------------------------------------------------------------- */
+#coverGen svg { color: var(--accent); font-size: 1.1rem; }
+
+#coverNote { margin: 10px 0 0; }
+
+.covers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+
+.covers:empty { display: none; }
+
+.cover { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+.cover img {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+  border-radius: 12px;
+  background: #000;
+  box-shadow: var(--shadow);
+}
+
+.cover .score { font-size: 0.75rem; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+
+.cover .button { padding: 8px 6px; font-size: 0.8rem; width: 100%; }
+
+.cover .button svg { font-size: 1rem; }

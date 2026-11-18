@@ -7,6 +7,8 @@ import { beatGrid, cutPlan, synthDrums, encodeWav, matchMusic, toGray, frameMoti
 import { colorHistogram, groupFaces, followFace, tileRegions, mergeDetections } from "./faces.js";
 import { chunksToLyrics } from "./lyrics.js";
 import { brollPlan, singingStretches } from "./broll.js";
+import { gray, sharpness, exposure, colourfulness, scoreFrames, pickCovers, coverCrop, signature } from "./thumbs.js";
+import { histDistance } from "./faces.js";
 import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
   SAMPLE_STEP,
@@ -1476,3 +1478,194 @@ async function planBroll(startT, duration, sound) {
     return { name: `broll${p.clip}.${ext}`, at: p.at, len: p.len, offset: p.offset, image: item.image, item };
   });
 }
+
+// ---- Cover images ----
+const COVER_W = 1080;
+const COVER_H = 1920;
+const COVER_SAMPLES = 24;
+const coverEls = {
+  button: document.getElementById("coverGen"),
+  note: document.getElementById("coverNote"),
+  list: document.getElementById("covers"),
+  title: document.getElementById("coverTitle"),
+};
+let coverUrls = [];
+let coverFont = null;
+
+async function loadCoverFont() {
+  if (!coverFont) {
+    coverFont = new FontFace("ReelPoppins", `url(${FONT_URL})`, { weight: "700" });
+    await coverFont.load();
+    document.fonts.add(coverFont);
+  }
+}
+
+// The face to judge a frame by: the chosen person's (if they look like them), else the largest.
+function coverFace(dets) {
+  if (!dets.length) return null;
+  if (faceTarget) {
+    const best = dets.reduce((a, d) => (histDistance(d.hist, faceTarget.hist) < histDistance(a.hist, faceTarget.hist) ? d : a));
+    return histDistance(best.hist, faceTarget.hist) < 0.5 ? best : null;
+  }
+  return dets.reduce((a, d) => (d.w * d.h > a.w * a.h ? d : a));
+}
+
+// Wraps text to lines no wider than maxWidth at the context's current font.
+function wrapCanvasText(ctx, text, maxWidth) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (line && ctx.measureText(next).width > maxWidth) {
+      lines.push(line);
+      line = w;
+    } else line = next;
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// Draws one cover from the video's current frame. Returns a JPEG blob.
+async function drawCover(video, face, title) {
+  const canvas = document.createElement("canvas");
+  canvas.width = COVER_W;
+  canvas.height = COVER_H;
+  const ctx = canvas.getContext("2d");
+  const { sx, sy, sw, sh } = coverCrop(video.videoWidth, video.videoHeight, face, COVER_W, COVER_H);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, COVER_W, COVER_H);
+  ctx.filter = "contrast(1.06) saturate(1.15) brightness(1.03)";
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, COVER_W, COVER_H);
+  ctx.filter = "none";
+
+  if (title) {
+    // A soft shadow behind the text, then the title in the middle band that the profile grid's
+    // 4:5 crop keeps (rows 285-1635 of 1920).
+    const shade = ctx.createLinearGradient(0, 950, 0, 1700);
+    shade.addColorStop(0, "rgba(0,0,0,0)");
+    shade.addColorStop(0.55, "rgba(0,0,0,0.5)");
+    shade.addColorStop(1, "rgba(0,0,0,0.65)");
+    ctx.fillStyle = shade;
+    ctx.fillRect(0, 950, COVER_W, COVER_H - 950);
+
+    await loadCoverFont();
+    const text = title.toUpperCase();
+    let size = 132;
+    let lines;
+    for (; size >= 72; size -= 6) {
+      ctx.font = `700 ${size}px ReelPoppins, sans-serif`;
+      lines = wrapCanvasText(ctx, text, COVER_W - 160);
+      if (lines.length <= 3 && lines.every((l) => ctx.measureText(l).width <= COVER_W - 160)) break;
+    }
+    const lineH = size * 1.08;
+    const bottom = 1540;
+    const top = bottom - lines.length * lineH;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#fff";
+    ctx.shadowColor = "rgba(0,0,0,0.55)";
+    ctx.shadowBlur = 28;
+    ctx.shadowOffsetY = 4;
+    lines.forEach((l, i) => ctx.fillText(l, COVER_W / 2, top + i * lineH));
+    ctx.shadowColor = "transparent";
+    // A short accent bar above the title.
+    const bar = ctx.createLinearGradient(COVER_W / 2 - 80, 0, COVER_W / 2 + 80, 0);
+    bar.addColorStop(0, "#7c4dff");
+    bar.addColorStop(1, "#ff4f8b");
+    ctx.fillStyle = bar;
+    ctx.beginPath();
+    ctx.roundRect(COVER_W / 2 - 80, top - 44, 160, 12, 6);
+    ctx.fill();
+  }
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+}
+
+coverEls.button.addEventListener("click", async () => {
+  if (!inputFile) return (coverEls.note.textContent = "Choose a video first.");
+  const video = els.preview;
+  const videoDuration = video.duration;
+  let startT = Math.max(0, parseTime(els.start.value) || 0);
+  let endT = parseTime(els.end.value);
+  if (!Number.isFinite(endT) || endT <= startT) endT = videoDuration;
+  endT = Math.min(endT, videoDuration);
+  if (endT - startT < 1) {
+    startT = 0;
+    endT = videoDuration;
+  }
+
+  coverEls.button.disabled = true;
+  els.go.disabled = true; // both move the preview video around
+  const started = performance.now();
+  try {
+    coverEls.note.textContent = "Looking at the frames…";
+    let detector = null;
+    try {
+      detector = await getFaceDetector();
+    } catch (err) {
+      console.warn("Face detection unavailable for covers", err);
+    }
+    const small = document.createElement("canvas");
+    small.width = 256;
+    small.height = Math.max(16, Math.round((256 * video.videoHeight) / video.videoWidth));
+    const sctx = small.getContext("2d", { willReadFrequently: true });
+    const frames = [];
+    video.pause();
+    for (let i = 0; i < COVER_SAMPLES; i++) {
+      const t = startT + 0.3 + ((endT - startT - 0.6) * i) / (COVER_SAMPLES - 1);
+      await seekTo(video, t);
+      sctx.drawImage(video, 0, 0, small.width, small.height);
+      const px = sctx.getImageData(0, 0, small.width, small.height).data;
+      const g = gray(px);
+      const face = detector ? coverFace(detectFaces(detector, video)) : null;
+      frames.push({
+        t,
+        sharp: sharpness(g, small.width, small.height),
+        exposure: exposure(g),
+        colour: colourfulness(px),
+        face,
+        sig: signature(g, small.width, small.height),
+      });
+      if (i % 4 === 0) coverEls.note.textContent = `Looking at the frames… ${Math.round((100 * i) / COVER_SAMPLES)}%`;
+    }
+    const picks = pickCovers(scoreFrames(frames), 3, Math.max(1, (endT - startT) / 8));
+    dlog("info", `Covers: ${picks.map((p) => `${p.t.toFixed(1)} s (score ${p.score}, face ${p.face ? "yes" : "no"})`).join(", ")}`);
+
+    coverEls.note.textContent = "Making the covers…";
+    const title = coverEls.title.checked ? els.title.value.trim() : "";
+    for (const u of coverUrls) URL.revokeObjectURL(u);
+    coverUrls = [];
+    coverEls.list.textContent = "";
+    for (const [i, p] of picks.entries()) {
+      await seekTo(video, p.t);
+      const blob = await drawCover(video, p.face, title);
+      const url = URL.createObjectURL(blob);
+      coverUrls.push(url);
+      const item = document.createElement("div");
+      item.className = "cover";
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = `Cover option ${i + 1}, from ${formatTime(p.t)}`;
+      const score = document.createElement("span");
+      score.className = "score";
+      score.textContent = `${formatTime(p.t)} · score ${p.score}`;
+      const link = document.createElement("a");
+      link.className = "button small";
+      link.href = url;
+      link.download = `cover-${i + 1}.jpg`;
+      link.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.2l3.1-3.1 1.4 1.4L12 16l-5.5-5.5 1.4-1.4 3.1 3.1zM5 18h14v2H5z" /></svg> Download';
+      item.append(img, score, link);
+      coverEls.list.append(item);
+    }
+    await seekTo(video, startT);
+    coverEls.note.textContent = picks.length
+      ? `Here are the ${picks.length} best frames (${clock((performance.now() - started) / 1000)}). In Instagram, choose "Add from camera roll" when editing the reel's cover.`
+      : "Couldn't find usable frames in this part of the video.";
+  } catch (err) {
+    console.warn("Cover images failed", err);
+    coverEls.note.textContent = `Couldn't make the covers: ${err.message}.`;
+  } finally {
+    coverEls.button.disabled = false;
+    els.go.disabled = false;
+  }
+});

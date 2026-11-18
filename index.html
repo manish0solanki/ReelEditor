@@ -262,6 +262,28 @@
       </label>
     </section>
 
+    <!-- 7. Cover image -->
+    <section class="card" aria-labelledby="h-cover">
+      <div class="card-head">
+        <span class="step">7</span>
+        <div>
+          <h2 id="h-cover">Cover image</h2>
+          <p class="sub">Three covers from the best frames, ready to post.</p>
+        </div>
+      </div>
+      <label class="check">
+        <input id="coverTitle" type="checkbox" checked />
+        <span class="check-text">Add the song title<small>Uses the title from step 6</small></span>
+      </label>
+      <button id="coverGen" type="button" class="button wide">
+        <span class="spinner dark" aria-hidden="true"></span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v8.6l4-4 3 3 2-2 5 5V7zm10 1.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" /></svg>
+        <span>Find the best frames</span>
+      </button>
+      <p id="coverNote" class="help" role="status">Picks sharp, well-lit frames with a clear face (or the person you chose to follow) between Start and End, from different moments. 1080×1920; the title stays inside the part Instagram shows on your profile grid.</p>
+      <div id="covers" class="covers"></div>
+    </section>
+
     <!-- Result -->
     <section class="card output" id="output" hidden aria-live="polite">
       <div class="card-head">
