@@ -87,6 +87,10 @@
         <span id="musicFileName">Choose a music file (MP3, M4A, WAV…)</span>
         <input id="musicFile" type="file" accept="audio/*" />
       </label>
+      <div id="matchRow" hidden>
+        <label class="check"><input id="matchMusic" type="checkbox" checked /> Match the music to the video's beat, so steps and moves land on it</label>
+        <small>Speeds the music up or down a little (at most 10%, without changing its pitch) and starts it where its bars line up with the video's. Works when the people in the video move to a beat you can hear in the original sound.</small>
+      </div>
       <label class="slider" id="musicVolRow" hidden>
         <span class="slider-title">Music volume: <span id="musicVolLabel">35</span>%</span>
         <input id="musicVol" type="range" min="0" max="100" value="35" />

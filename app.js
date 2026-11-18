@@ -3,7 +3,7 @@
 import { FFmpeg } from "./vendor/ffmpeg/index.js";
 import { dlog, openPanel } from "./debug.js";
 import { audioFeatures, repetitionCurve, findBestMoments } from "./moments.js";
-import { beatGrid, cutPlan, synthDrums, encodeWav } from "./beats.js";
+import { beatGrid, cutPlan, synthDrums, encodeWav, matchMusic } from "./beats.js";
 import { colorHistogram, groupFaces, followFace, tileRegions, mergeDetections } from "./faces.js";
 import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
@@ -97,6 +97,8 @@ const els = {
   voiceVolLabel: $("voiceVolLabel"),
   voiceVolRow: $("voiceVolRow"),
   beatCuts: $("beatCuts"),
+  matchMusic: $("matchMusic"),
+  matchRow: $("matchRow"),
   go: $("go"),
   output: $("output"),
   progress: $("progress"),
@@ -797,6 +799,7 @@ async function prepareSound(startT, duration) {
   const cuts = els.beatCuts.checked;
   const result = { noiseFloorDb: -60, music: null, closeups: [], notes: [] };
   if (noise === "off" && music === "none" && !cuts) return result;
+  if (music === "file" && !els.musicFile.files[0]) throw new Error("Choose a music file, or set Background music to None");
 
   setStatus("Listening to the sound for the music and edit…");
   const clip = await performanceSlice(startT, duration);
@@ -811,8 +814,39 @@ async function prepareSound(startT, duration) {
 
   // The beat to follow: the music file's if there is one, otherwise the performance's.
   let grid = null;
+  let matched = null;
   if (music === "file" || cuts || music === "beat") {
-    if (music === "file") {
+    if (music === "file" && els.matchMusic.checked) {
+      // Match the music to the video's own beat: speed it up or down and line up the bars.
+      const file = els.musicFile.files[0];
+      if (!file) throw new Error("Choose a music file, or set Background music to None");
+      if (!musicBeatCache || musicBeatCache.file !== file) musicBeatCache = { file, ...(await decodeMono(file)) };
+      const { mono, sampleRate } = musicBeatCache;
+      const videoGrid = beatGrid(clip.mono, clip.sampleRate);
+      // The music's beat over its first 6 minutes (enough to find a good starting point).
+      const musicGrid = beatGrid(mono.subarray(0, Math.min(mono.length, 360 * sampleRate)), sampleRate);
+      matched = matchMusic(videoGrid, musicGrid, duration);
+      dlog(
+        "info",
+        `Music match: video ${videoGrid.bpm} BPM (confidence ${videoGrid.confidence.toFixed(2)}), music ${musicGrid.bpm} BPM ` +
+          `(confidence ${musicGrid.confidence.toFixed(2)}): ` +
+          (matched.ok
+            ? `speed x${matched.tempo}, start ${matched.start.toFixed(2)} s into the music, ${Math.round(matched.fraction * 100)}% of beats line up`
+            : `not matched, ${matched.reason}`)
+      );
+      if (matched.ok) {
+        const pct = (matched.tempo - 1) * 100;
+        result.notes.push(
+          `Music matched to the video's beat: ${matched.musicBpm} → ${matched.videoBpm} BPM` +
+            ` (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% speed), starting ${formatTime(matched.start * matched.tempo)} into the song,` +
+            ` ${Math.round(matched.fraction * 100)}% of beats line up.`
+        );
+        grid = matched;
+      } else {
+        result.notes.push(`Couldn't match the music to the video: ${matched.reason}. It plays from the start at its own speed.`);
+        grid = beatGrid(mono.subarray(0, Math.round(duration * sampleRate)), sampleRate);
+      }
+    } else if (music === "file") {
       const file = els.musicFile.files[0];
       if (!file) throw new Error("Choose a music file, or set Background music to None");
       if (!musicBeatCache || musicBeatCache.file !== file) musicBeatCache = { file, ...(await decodeMono(file)) };
@@ -850,6 +884,7 @@ async function prepareSound(startT, duration) {
     const file = els.musicFile.files[0];
     const ext = (file.name.split(".").pop() || "mp3").toLowerCase().replace(/[^a-z0-9]/g, "") || "mp3";
     result.music = { name: `music.${ext}`, bytes: new Uint8Array(await file.arrayBuffer()), volume: Number(els.musicVol.value) / 100, duck: "strong" };
+    if (matched?.ok) Object.assign(result.music, { tempo: matched.tempo, start: matched.start });
   }
 
   if (cuts) {
@@ -863,13 +898,14 @@ async function prepareSound(startT, duration) {
 function updateSoundOptions() {
   const music = els.music.value;
   els.musicFileRow.hidden = music !== "file";
+  els.matchRow.hidden = music !== "file";
   els.musicVolRow.hidden = music === "none";
   els.musicVolLabel.textContent = els.musicVol.value;
   els.voiceVolLabel.textContent = els.voiceVol.value;
   try {
     localStorage.setItem(
       SOUND_KEY,
-      JSON.stringify({ noise: els.noise.value, music, musicVol: els.musicVol.value, voiceVol: els.voiceVol.value, cuts: els.beatCuts.checked })
+      JSON.stringify({ noise: els.noise.value, music, musicVol: els.musicVol.value, voiceVol: els.voiceVol.value, cuts: els.beatCuts.checked, match: els.matchMusic.checked })
     );
   } catch {
     // ignore
@@ -885,11 +921,12 @@ try {
     if (saved.musicVol) els.musicVol.value = saved.musicVol;
     if (saved.voiceVol) els.voiceVol.value = saved.voiceVol;
     els.beatCuts.checked = !!saved.cuts;
+    if (saved.match === false) els.matchMusic.checked = false;
   }
 } catch {
   // ignore
 }
-for (const el of [els.noise, els.music, els.musicVol, els.voiceVol, els.beatCuts]) {
+for (const el of [els.noise, els.music, els.musicVol, els.voiceVol, els.beatCuts, els.matchMusic]) {
   el.addEventListener(el.type === "range" ? "input" : "change", updateSoundOptions);
 }
 els.musicFile.addEventListener("change", () => {
@@ -979,7 +1016,8 @@ els.go.addEventListener("click", async () => {
       noise: els.noise.value,
       noiseFloorDb: sound.noiseFloorDb,
       voiceVolume: Number(els.voiceVol.value) / 100,
-      music: sound.music && { name: sound.music.name, volume: sound.music.volume, duck: sound.music.duck },
+      // Everything about the music except its bytes (which are written to a file separately).
+      music: sound.music && (({ bytes, ...rest }) => rest)(sound.music),
       closeups: sound.closeups,
     });
     for (const f of textFiles) usedFiles.push(f.name);

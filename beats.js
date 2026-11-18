@@ -274,3 +274,82 @@ export function encodeWav(samples, sampleRate) {
   }
   return bytes;
 }
+
+// ---- Matching a music file to the video's beat -------------------------------------------------
+// If the people in the video move to the sound in the original recording, their steps follow its
+// beat. To make new music land on those steps, the music is sped up or slowed down to the video's
+// tempo (ffmpeg's atempo, which keeps the pitch) and started at the point where its beats line up
+// with the video's beats, bar lines included.
+
+const MAX_STRETCH = 0.1; // more than ±10% speed change sounds wrong
+
+// How many of the video's beats have a music beat close by (within `tol` seconds), weighted so
+// closer is better. musicBeats must already be in reel time. Returns { score, fraction }.
+function alignment(videoBeats, musicBeats, tol = 0.07) {
+  if (!videoBeats.length || !musicBeats.length) return { score: 0, fraction: 0 };
+  let score = 0;
+  let hits = 0;
+  let j = 0;
+  for (const v of videoBeats) {
+    while (j + 1 < musicBeats.length && musicBeats[j + 1] <= v) j++;
+    const d = Math.min(Math.abs(musicBeats[j] - v), j + 1 < musicBeats.length ? Math.abs(musicBeats[j + 1] - v) : Infinity);
+    score += Math.exp(-((d / 0.03) ** 2) / 2);
+    if (d <= tol) hits++;
+  }
+  return { score, fraction: hits / videoBeats.length };
+}
+
+// video: beat grid of the reel's own sound (times from the reel start). music: beat grid of the
+// whole music file (times from the file start). duration: reel length.
+// Returns { ok, reason?, tempo (atempo factor), start (seconds into the sped-up music to begin at),
+//   videoBpm, musicBpm, fraction (share of the video's beats that line up), beats, downbeats, phase }
+// with beats/downbeats being the music's beats in reel time after matching.
+export function matchMusic(video, music, duration, { minConfidence = 0.15 } = {}) {
+  const fail = (reason) => ({ ok: false, reason, tempo: 1, start: 0, videoBpm: video.bpm, musicBpm: music.bpm, fraction: 0 });
+  if (video.confidence < minConfidence || video.beats.length < 4) return fail("no clear beat in the video's sound");
+  if (music.confidence < minConfidence || music.beats.length < 4) return fail("no clear beat in the music");
+
+  // Half and double tempo are the same pulse: pick whichever needs the smallest speed change.
+  const options = [1, 2, 0.5].map((k) => video.bpm / (music.bpm * k)).filter((r) => Math.abs(r - 1) <= MAX_STRETCH);
+  if (!options.length) return fail(`the tempos are too different (${music.bpm} vs ${video.bpm} BPM)`);
+  const tempo = options.reduce((a, b) => (Math.abs(b - 1) < Math.abs(a - 1) ? b : a));
+
+  // Music beats after the speed change, in sped-up music time.
+  const fast = music.beats.map((b) => b / tempo);
+  const fastDown = new Set(music.downbeats.map((b) => b / tempo));
+  const vBeats = video.beats;
+  const vDown = video.downbeats.length ? video.downbeats : vBeats;
+
+  // Try starting points that put a music bar line on one of the video's first few bar lines.
+  const firstBars = vDown.slice(0, 4);
+  const musicBars = fast.filter((b) => fastDown.has(b) || !fastDown.size);
+  const tried = [];
+  for (const mb of musicBars) {
+    for (const vb of firstBars) {
+      const start = mb - vb;
+      if (start < 0) continue;
+      const shifted = fast.map((b) => b - start).filter((b) => b > -1 && b < duration + 1);
+      tried.push({ start, ...alignment(vBeats, shifted) });
+    }
+  }
+  if (!tried.length) return fail("the music is too short to line up");
+  // Many starting points fit about equally well; use the earliest that's within 3% of the best,
+  // so the song plays from near its beginning.
+  const top = Math.max(...tried.map((c) => c.score));
+  const best = tried.filter((c) => c.score >= 0.97 * top).reduce((a, b) => (b.start < a.start ? b : a));
+
+  const beats = fast.map((b) => b - best.start).filter((b) => b >= 0 && b < duration);
+  const downbeats = fast.filter((b) => fastDown.has(b)).map((b) => b - best.start).filter((b) => b >= 0 && b < duration);
+  return {
+    ok: true,
+    tempo: Math.round(tempo * 10000) / 10000,
+    start: Math.round(best.start * 1000) / 1000,
+    videoBpm: video.bpm,
+    musicBpm: music.bpm,
+    fraction: best.fraction,
+    beats,
+    downbeats,
+    phase: 0,
+    confidence: music.confidence,
+  };
+}

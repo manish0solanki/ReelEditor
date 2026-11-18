@@ -321,7 +321,7 @@ export function buildCommand({
   noise = "off", // "off", "light" or "strong"
   noiseFloorDb = -60, // the clip's quiet floor, for tuning the noise reduction
   voiceVolume = 1, // the clip's own sound, 0 (muted) to 1
-  music = null, // { name, volume (0-1), duck: "strong" | "light" } to mix in a music file
+  music = null, // { name, volume (0-1), duck: "strong" | "light", tempo?, start? } to mix in a music file
   closeups = [], // [{ a, b }]: stretches shown as a close-up (beat cuts)
 }) {
   const textFiles = [];
@@ -406,7 +406,11 @@ export function buildCommand({
     const graph =
       // With music, the clip's volume sets the balance before the mix (and the ducking follows it).
       `[0:a]${[...voice, ...(voiceVolume !== 1 ? [`volume=${voiceVolume}`] : [])].join(",")},asplit[voice][key];` +
-      `[1:a]aresample=48000,volume=${music.volume},afade=t=in:st=0:d=1,afade=t=out:st=${fadeOut}:d=1.5[music];` +
+      // Matched to the video's beat: atempo changes the speed (not the pitch), then the sped-up music
+      // starts at the point where its bars line up with the video's.
+      `[1:a]${music.tempo && music.tempo !== 1 ? `atempo=${music.tempo},` : ""}` +
+      `${music.start > 0 ? `atrim=start=${music.start.toFixed(3)},asetpts=PTS-STARTPTS,` : ""}` +
+      `aresample=48000,volume=${music.volume},afade=t=in:st=0:d=1,afade=t=out:st=${fadeOut}:d=1.5[music];` +
       `[music][key]sidechaincompress=${duck}:attack=15:release=350[ducked];` +
       `[voice][ducked]amix=inputs=2:duration=first:normalize=0,${LOUDNORM}[aout]`;
     audioArgs = ["-filter_complex", graph, "-map", "0:v:0", "-map", "[aout]"];
