@@ -75,8 +75,26 @@
       <video id="result" controls playsinline hidden></video>
       <a id="download" class="button" download="reel.mp4" hidden>Download reel</a>
     </section>
+    <details class="card debug" id="debug">
+      <summary>Debug log</summary>
+      <div class="debug-tools">
+        <label>Video engine
+          <select id="engineChoice">
+            <option value="auto">Auto (fast if it works, else standard)</option>
+            <option value="multi">Fast (multi-threaded) only</option>
+            <option value="single">Standard (single-threaded) only</option>
+          </select>
+        </label>
+        <div class="debug-buttons">
+          <button id="debugCopy" type="button">Copy log</button>
+          <button id="debugClear" type="button" class="secondary">Clear</button>
+        </div>
+      </div>
+      <pre id="debugLog"></pre>
+    </details>
   </main>
 
+  <script type="module" src="debug.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

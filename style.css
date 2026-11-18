@@ -129,3 +129,37 @@ input[type="text"], textarea, select {
 code { font-size: 0.95em; }
 
 .warn { color: #b3261e; font-weight: 600; }
+
+.debug summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.debug-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: end;
+  margin-top: 12px;
+}
+
+.debug-tools label { flex: 1 1 220px; margin: 0; }
+
+.debug-buttons { display: flex; gap: 8px; }
+
+.debug-buttons button { padding: 8px 14px; font-size: 0.9rem; }
+
+button.secondary { background: #e4e4ea; color: #1c1c1e; }
+
+#debugLog {
+  margin: 12px 0 0;
+  max-height: 50vh;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: #111114;
+  color: #d8d8de;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -1,6 +1,7 @@
 // ffmpeg.wasm's wrapper starts a Web Worker from its own folder, and browsers only allow workers
 // from the page's own site, so these two packages are served from vendor/ instead of a CDN.
 import { FFmpeg } from "./vendor/ffmpeg/index.js";
+import { dlog, openPanel } from "./debug.js";
 import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
   SAMPLE_STEP,
@@ -37,6 +38,8 @@ const MT_FAILED_KEY = "reelmaker.multiThreadFailedAt";
 const MT_RETRY_AFTER_MS = 30 * 24 * 3600 * 1000; // try the fast engine again after 30 days
 const MT_START_TIMEOUT_MS = 20000;
 const STALL_TIMEOUT_MS = 45000; // no output from the fast engine for this long = stalled
+const SINGLE_START_TIMEOUT_MS = 60000; // the standard engine normally starts in a few seconds
+const ENGINE_KEY = "reelmaker.engine"; // "auto", "multi" or "single", from the debug panel
 const FONT_URL = "fonts/Poppins-Bold.ttf";
 // Face tracking is loaded only when it's used, so if this CDN is unreachable the rest of the app
 // still works and the crop falls back to the position slider.
@@ -157,6 +160,7 @@ function stopTimer(ok) {
 
 function onEngineLog({ message }) {
   lastLogAt = performance.now();
+  dlog("ffmpeg", message);
   if (!timer.encoding) return;
   const t = parseEncodedTime(message);
   if (t == null) return;
@@ -165,6 +169,7 @@ function onEngineLog({ message }) {
 }
 
 function setStatus(text) {
+  if (text && text !== els.status.textContent) dlog("step", text);
   els.status.textContent = text;
 }
 
@@ -200,9 +205,26 @@ const withTimeout = (promise, ms, message) => {
 };
 
 async function download(url, type, showProgress) {
-  return toBlobURL(url, type, showProgress, ({ total, received }) => {
-    if (total > 0) setStatus(`Downloading video engine (first time only)… ${Math.round((100 * received) / total)}%`);
+  const name = url.split("/").slice(-4).join("/");
+  const started = performance.now();
+  let size = 0;
+  dlog("info", `Downloading ${name}`);
+  const blobUrl = await toBlobURL(url, type, true, ({ total, received }) => {
+    size = received;
+    if (showProgress && total > 0) {
+      setStatus(`Downloading video engine (first time only)… ${Math.round((100 * received) / total)}%`);
+    }
   });
+  dlog("info", `Downloaded ${name}: ${(size / 1048576).toFixed(1)} MB in ${((performance.now() - started) / 1000).toFixed(1)} s`);
+  return blobUrl;
+}
+
+function engineChoice() {
+  try {
+    return localStorage.getItem(ENGINE_KEY) || "auto";
+  } catch {
+    return "auto";
+  }
 }
 
 async function loadCore(mode) {
@@ -213,26 +235,48 @@ async function loadCore(mode) {
     wasmURL: await download(`${base}/ffmpeg-core.wasm`, "application/wasm", true),
   };
   if (mode === "multi") config.workerURL = await download(`${base}/ffmpeg-core.worker.js`, "text/javascript", false);
-  setStatus("Starting video engine…");
+  const label = mode === "multi" ? "fast (multi-threaded)" : "standard (single-threaded)";
+  setStatus(`Starting video engine (${mode === "multi" ? "fast" : "standard"})…`);
   const engine = new FFmpeg();
   engine.on("log", onEngineLog);
   ffmpeg = engine;
-  const loading = engine.load(config);
-  await (mode === "multi"
-    ? withTimeout(loading, MT_START_TIMEOUT_MS, "The fast video engine didn't start")
-    : loading);
+  const started = performance.now();
+  // A line every 5 s while waiting, so a hang is obvious in the debug log.
+  const heartbeat = setInterval(() => {
+    dlog("info", `…still waiting for the ${label} engine to start (${Math.round((performance.now() - started) / 1000)} s)`);
+  }, 5000);
+  try {
+    await withTimeout(
+      engine.load(config),
+      mode === "multi" ? MT_START_TIMEOUT_MS : SINGLE_START_TIMEOUT_MS,
+      `The ${label} video engine didn't start within ${(mode === "multi" ? MT_START_TIMEOUT_MS : SINGLE_START_TIMEOUT_MS) / 1000} s`
+    );
+  } finally {
+    clearInterval(heartbeat);
+  }
   engineMode = mode;
-  console.info(`Video engine loaded (${mode === "multi" ? "multi-threaded" : "single-threaded"}).`);
+  console.info(`Video engine loaded: ${label}, in ${((performance.now() - started) / 1000).toFixed(1)} s.`);
 }
 
 async function loadEngine() {
   if (ffmpeg && engineMode) return;
-  if (MULTI_THREAD_SUPPORTED && !multiThreadFailedRecently()) {
+  const choice = engineChoice();
+  const failedBefore = multiThreadFailedRecently();
+  dlog(
+    "info",
+    `Engine choice: ${choice} · fast engine possible here: ${MULTI_THREAD_SUPPORTED} · fast engine failed recently: ${failedBefore}`
+  );
+  if (choice === "multi" && !MULTI_THREAD_SUPPORTED) {
+    dlog("warn", "The fast engine can't run on this page (not cross-origin isolated), so using the standard one.");
+  }
+  const tryMulti = MULTI_THREAD_SUPPORTED && (choice === "multi" || (choice === "auto" && !failedBefore));
+  if (tryMulti && choice !== "single") {
     try {
       await loadCore("multi");
       return;
     } catch (err) {
       giveUpOnMultiThread(err);
+      if (choice === "multi") throw err;
     }
   }
   await loadCore("single");
@@ -240,6 +284,7 @@ async function loadEngine() {
 
 // Runs ffmpeg. With the fast engine, a watchdog rejects if ffmpeg goes quiet for too long.
 async function execWatched(args) {
+  dlog("info", `ffmpeg ${args.join(" ")}`);
   if (engineMode !== "multi") return ffmpeg.exec(args);
   lastLogAt = performance.now();
   let id;
@@ -543,7 +588,7 @@ els.go.addEventListener("click", async () => {
     try {
       data = await encode();
     } catch (err) {
-      if (engineMode !== "multi" && !(err instanceof EngineStalled)) throw err;
+      if ((engineMode !== "multi" && !(err instanceof EngineStalled)) || engineChoice() === "multi") throw err;
       // The fast engine hung or failed: start this reel again on the standard engine.
       giveUpOnMultiThread(err);
       setStatus("The fast engine didn't work on this device, so switching to the standard one…");
@@ -566,9 +611,13 @@ els.go.addEventListener("click", async () => {
     setStatus(`Done! Preview below, then download and upload to Instagram. ${notes.join(" ")}`.trim());
   } catch (err) {
     console.error(err);
+    openPanel();
     const msg = String(err?.message || err).replace(/\.+$/, "");
     const memory = /memory|out of bounds|abort|exited with code/i.test(msg);
-    setStatus(`Something went wrong: ${msg}.${memory ? " Try a shorter clip or a smaller file." : ""}`);
+    setStatus(
+      `Something went wrong: ${msg}.${memory ? " Try a shorter clip or a smaller file." : ""} ` +
+        "The Debug log at the bottom shows the details; tap Copy log to share them."
+    );
   } finally {
     stopTimer(ok);
     for (const name of usedFiles) {
@@ -581,3 +630,21 @@ els.go.addEventListener("click", async () => {
     els.go.disabled = false;
   }
 });
+
+// ---- Debug panel: engine choice ----
+const engineSelect = document.getElementById("engineChoice");
+engineSelect.value = engineChoice();
+engineSelect.addEventListener("change", () => {
+  try {
+    localStorage.setItem(ENGINE_KEY, engineSelect.value);
+    // Picking Auto again gives the fast engine a fresh chance.
+    if (engineSelect.value === "auto") localStorage.removeItem(MT_FAILED_KEY);
+  } catch {
+    // ignore
+  }
+  if (ffmpeg) ffmpeg.terminate();
+  ffmpeg = null;
+  engineMode = null;
+  dlog("info", `Engine choice set to ${engineSelect.value}; it applies to the next reel.`);
+});
+dlog("info", `App ready · engine choice: ${engineChoice()} · fast engine failed recently: ${multiThreadFailedRecently()}`);

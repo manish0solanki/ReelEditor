@@ -41,6 +41,10 @@ npm test
 
 If a native `ffmpeg` is installed, one extra test renders a short reel with the real command and checks the output size and audio rate. Without ffmpeg that test is skipped.
 
+## Debug log
+
+If something gets stuck, open **Debug log** at the bottom of the page. It shows every step with a timestamp: downloads, which video engine is starting (with a line every 5 seconds while it waits), errors, and ffmpeg's own output. **Copy log** copies it to share. The **Video engine** switch there can force the fast (multi-threaded) or standard (single-threaded) engine.
+
 ## Lyrics format
 
 One line per lyric, starting with the time in the original video:
@@ -77,6 +81,7 @@ Long lines wrap onto two lines automatically, and shrink a little if they still 
 - `index.html`: the page layout.
 - `style.css`: styling.
 - `editor.js`: pure editing logic (crop path, captions, ffmpeg command). No browser code, so it can be tested separately.
+- `debug.js`: the on-page debug log.
 - `app.js`: browser glue: file input, face tracking, the ffmpeg engine, and the download.
 - `fonts/Poppins-Bold.ttf`: caption font (SIL Open Font License).
 - `test/`: tests for `editor.js`.

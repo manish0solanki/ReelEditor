@@ -259,7 +259,9 @@ export function buildCommand({
     v.push("eq=contrast=1.08:saturation=1.12:brightness=0.02");
     v.push("unsharp=3:3:0.8:3:3:0.0");
   }
-  v.push(`scale=${FRAME_W}:${FRAME_H}`);
+  // setsar=1: the crop is only approximately 9:16, so mark the pixels square rather than let players
+  // stretch the picture by the tiny difference.
+  v.push(`scale=${FRAME_W}:${FRAME_H}`, "setsar=1");
 
   if (title) {
     addTextBlock({
