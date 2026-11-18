@@ -16,7 +16,7 @@ const MAX_FREQ = 2000;
 // ---- Signal features ---------------------------------------------------------------------------
 
 // In-place radix-2 FFT. re/im are Float64Arrays of a power-of-two length.
-function fft(re, im) {
+export function fft(re, im) {
   const n = re.length;
   for (let i = 1, j = 0; i < n; i++) {
     let bit = n >> 1;

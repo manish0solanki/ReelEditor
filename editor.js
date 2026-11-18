@@ -112,19 +112,98 @@ function smooth(values, radius = 2) {
   });
 }
 
+// Background noise reduction for the performance's sound. afftdn removes steady noise (fan, hum,
+// hiss, room rumble); the high-pass takes out low rumble below the voice. Neither can remove other
+// people talking, which would also damage the singing.
+// afftdn only works well when its noise floor (nf) is set from the recording, so the app measures the
+// clip's quietest moments (floorDb, mean loudness in dBFS). Measured with pink noise at -60, -48 and
+// -39 dB under speech: nf = floor + 16 removes about 7 dB of noise, floor + 22 about 13-16 dB, and the
+// speech level stays within 0.2 dB. afftdn accepts nf from -80 to -20.
+const NOISE = {
+  light: { highpass: 70, above: 16, nr: 10 },
+  strong: { highpass: 90, above: 22, nr: 24 },
+};
+
+// The floor estimate is capped at -50 dB: in a recording with no quiet moments at all (continuous
+// music) the "floor" is really the music, and treating that as noise dulls it (on a clean song,
+// nf -20 took 8 dB off everything above 4 kHz). With the cap, the worst case is about 3 dB (strong).
+const MAX_FLOOR = -50;
+
+export function noiseFilters(level, floorDb = -60) {
+  const n = NOISE[level];
+  if (!n) return [];
+  const nf = Math.max(-80, Math.min(-20, Math.round(Math.min(floorDb, MAX_FLOOR) + n.above)));
+  return [`highpass=f=${n.highpass}`, `afftdn=nr=${n.nr}:nf=${nf}`];
+}
+
+// Loudness (mean square, dBFS) of each `hop`-second frame of mono samples.
+export function loudnessDb(samples, sampleRate, hop = 0.25) {
+  const n = Math.round(hop * sampleRate);
+  const out = [];
+  for (let i = 0; i + n <= samples.length; i += n) {
+    let sum = 0;
+    for (let j = i; j < i + n; j++) sum += samples[j] * samples[j];
+    out.push(10 * Math.log10(sum / n + 1e-10));
+  }
+  return out;
+}
+
+// The quiet floor of a clip from its loudness frames (dB): the 5th percentile.
+export function noiseFloor(rmsDb) {
+  const v = rmsDb.filter(Number.isFinite).sort((a, b) => a - b);
+  return v.length ? v[Math.floor(0.05 * (v.length - 1))] : -60;
+}
+
+const CLOSEUP_ZOOM = 1.3;
+
+// The close-up window for beat cuts: 1/1.3 the size of the wide crop, centred on the same point along
+// the tracking axis, and nearer the top across it (faces are usually in the upper part of the frame).
+// dx/dy are offsets from the wide window's position.
+export function closeupGeometry(geometry) {
+  const w = even(geometry.cropW / CLOSEUP_ZOOM);
+  const h = even(geometry.cropH / CLOSEUP_ZOOM);
+  const spareX = geometry.cropW - w;
+  const spareY = geometry.cropH - h;
+  const along = 0.5; // centred on the tracked face
+  const across = 0.3; // a little headroom above the face
+  return {
+    w,
+    h,
+    dx: even(spareX * (geometry.axis === "x" ? along : 0.5)),
+    dy: even(spareY * (geometry.axis === "y" ? along : across)),
+  };
+}
+
+// With beat cuts, the face tracking moves both crops: the close-up keeps its offset from the wide shot.
+export function cutTrackTargets(geometry) {
+  const c = closeupGeometry(geometry);
+  return [
+    { name: "crop@wide", offset: 0 },
+    { name: "crop@close", offset: geometry.axis === "y" ? c.dy : c.dx },
+  ];
+}
+
 // Text for ffmpeg's sendcmd filter. At each key the crop offset becomes an expression of time that
 // moves in a straight line to the next key, so the crop glides instead of jumping every sample.
 // The last key holds still. Expressions avoid commas and spaces, which sendcmd treats as separators.
-export function trackFileText(keys, axis) {
+// targets: the crop filters to move, with an offset added to each ([{ name, offset }]); by default
+// the single "crop". With beat cuts the wide and close-up crops both follow the singer.
+export function trackFileText(keys, axis, targets = [{ name: "crop", offset: 0 }]) {
   const param = axis === "y" ? "y" : "x";
   return (
     keys
       .map((k, i) => {
         const next = keys[i + 1];
         const t0 = k.t.toFixed(2);
-        if (!next || next.x === k.x || next.t <= k.t) return `${t0} crop ${param} ${k.x};`;
-        const span = (next.t - k.t).toFixed(2);
-        return `${t0} crop ${param} ${k.x}+(${next.x - k.x})*(t-${t0})/${span};`;
+        const moving = next && next.x !== k.x && next.t > k.t;
+        const span = moving ? (next.t - k.t).toFixed(2) : "";
+        const commands = targets.map(({ name, offset }) => {
+          const base = k.x + offset;
+          return moving
+            ? `${name} ${param} ${base}+(${next.x - k.x})*(t-${t0})/${span}`
+            : `${name} ${param} ${base}`;
+        });
+        return `${t0} ${commands.join(", ")};`;
       })
       .join("\n") + "\n"
   );
@@ -239,29 +318,52 @@ export function buildCommand({
   title,
   grade,
   captionStyle = "classic",
+  noise = "off", // "off", "light" or "strong"
+  noiseFloorDb = -60, // the clip's quiet floor, for tuning the noise reduction
+  voiceVolume = 1, // the performance's own sound, 0-1
+  music = null, // { name, volume (0-1), duck: "strong" | "light" } to mix in a music file
+  closeups = [], // [{ a, b }]: stretches shown as a close-up (beat cuts)
 }) {
   const textFiles = [];
   const v = [];
-
-  if (geometry.axis !== "none") {
-    if (hasTrack) v.push("sendcmd=f=track.txt");
-    const { cropW, cropH } = geometry;
-    v.push(
-      geometry.axis === "x"
-        ? `crop=w=${cropW}:h=${cropH}:x=${staticOffset}:y=0`
-        : `crop=w=${cropW}:h=${cropH}:x=0:y=${staticOffset}`
-    );
-  }
-  // Grade before upscaling: the cropped frame has about a third of the pixels of 1080x1920,
-  // so the colour and sharpening filters cost a third as much. (Sharpening the source detail
-  // before the upscale also looks at least as good as sharpening the upscaled result.)
-  if (grade) {
-    v.push("eq=contrast=1.08:saturation=1.12:brightness=0.02");
-    v.push("unsharp=3:3:0.8:3:3:0.0");
-  }
+  const gradeFilters = grade
+    ? ["eq=contrast=1.08:saturation=1.12:brightness=0.02", "unsharp=3:3:0.8:3:3:0.0"]
+    : [];
   // setsar=1: the crop is only approximately 9:16, so mark the pixels square rather than let players
   // stretch the picture by the tiny difference.
-  v.push(`scale=${FRAME_W}:${FRAME_H}`, "setsar=1");
+  const toFrame = [`scale=${FRAME_W}:${FRAME_H}`, "setsar=1"];
+
+  if (closeups.length) {
+    // Beat cuts: the picture is split into a wide shot and a close-up of the singer, each cropped,
+    // graded and scaled on its own; the close-up is shown over the wide shot during its stretches.
+    const close = closeupGeometry(geometry);
+    const wideX = geometry.axis === "x" ? staticOffset : 0;
+    const wideY = geometry.axis === "y" ? staticOffset : 0;
+    const enable = closeups.map((c) => `between(t,${c.a.toFixed(2)},${c.b.toFixed(2)})`).join("+");
+    v.push(
+      (hasTrack ? "sendcmd=f=track.txt," : "") +
+        "split[wide][close];" +
+        [`[wide]crop@wide=w=${geometry.cropW}:h=${geometry.cropH}:x=${wideX}:y=${wideY}`, ...gradeFilters, ...toFrame].join(",") +
+        "[wv];" +
+        [`[close]crop@close=w=${close.w}:h=${close.h}:x=${wideX + close.dx}:y=${wideY + close.dy}`, ...gradeFilters, ...toFrame].join(",") +
+        "[cv];" +
+        `[wv][cv]overlay=enable='${enable}'`
+    );
+  } else {
+    if (geometry.axis !== "none") {
+      if (hasTrack) v.push("sendcmd=f=track.txt");
+      const { cropW, cropH } = geometry;
+      v.push(
+        geometry.axis === "x"
+          ? `crop=w=${cropW}:h=${cropH}:x=${staticOffset}:y=0`
+          : `crop=w=${cropW}:h=${cropH}:x=0:y=${staticOffset}`
+      );
+    }
+    // Grade before upscaling: the cropped frame has about a third of the pixels of 1080x1920,
+    // so the colour and sharpening filters cost a third as much. (Sharpening the source detail
+    // before the upscale also looks at least as good as sharpening the upscaled result.)
+    v.push(...gradeFilters, ...toFrame);
+  }
 
   if (title) {
     addTextBlock({
@@ -287,16 +389,36 @@ export function buildCommand({
     v.push("fade=t=in:st=0:d=0.6", `fade=t=out:st=${fadeOutAt}:d=1`);
   }
 
-  const a = ["afade=t=in:st=0:d=0.6"];
-  if (duration > 2) a.push(`afade=t=out:st=${fadeOutAt}:d=1`);
-  a.push("acompressor=threshold=0.125:ratio=3:attack=20:release=250", "loudnorm=I=-14:TP=-1.5:LRA=11");
+  // The performance's own sound: noise reduction first, then fades and gentle compression.
+  const voice = [...noiseFilters(noise, noiseFloorDb), "afade=t=in:st=0:d=0.6"];
+  if (duration > 2) voice.push(`afade=t=out:st=${fadeOutAt}:d=1`);
+  voice.push("acompressor=threshold=0.125:ratio=3:attack=20:release=250");
+  if (voiceVolume !== 1) voice.push(`volume=${voiceVolume}`);
+  const LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11";
+
+  const inputs = ["-ss", String(start), "-i", inputName];
+  let audioArgs;
+  if (music) {
+    // Music: looped if it's shorter than the reel, faded in and out, and "ducked" (turned down)
+    // while the performance is loud, so the singing stays on top.
+    inputs.push("-stream_loop", "-1", "-i", music.name);
+    const fadeOut = Math.max(0, duration - 1.5).toFixed(2);
+    const duck = music.duck === "light" ? "threshold=0.06:ratio=3" : "threshold=0.03:ratio=8";
+    const graph =
+      `[0:a]${voice.join(",")},asplit[voice][key];` +
+      `[1:a]aresample=48000,volume=${music.volume},afade=t=in:st=0:d=1,afade=t=out:st=${fadeOut}:d=1.5[music];` +
+      `[music][key]sidechaincompress=${duck}:attack=15:release=350[ducked];` +
+      `[voice][ducked]amix=inputs=2:duration=first:normalize=0,${LOUDNORM}[aout]`;
+    audioArgs = ["-filter_complex", graph, "-map", "0:v:0", "-map", "[aout]"];
+  } else {
+    audioArgs = ["-af", [...voice, LOUDNORM].join(",")];
+  }
 
   const args = [
-    "-ss", String(start),
-    "-i", inputName,
+    ...inputs,
     "-t", String(duration),
     "-vf", v.join(","),
-    "-af", a.join(","),
+    ...audioArgs,
     "-c:v", "libx264",
     // ultrafast is about 2x quicker than veryfast in the browser. Its files are larger, so the quality
     // setting is nudged up (lower crf) to compensate; Instagram re-encodes uploads anyway.

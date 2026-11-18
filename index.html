@@ -50,11 +50,45 @@
       <h2>Look</h2>
       <label class="check"><input id="track" type="checkbox" checked /> Keep the singer centered (face tracking)</label>
       <label class="slider">
-        Fallback crop position: <span id="posLabel">50</span>%
+        <span class="slider-title">Fallback crop position: <span id="posLabel">50</span>%</span>
         <input id="pos" type="range" min="0" max="100" value="50" />
         <small>Used when tracking is off or no face is found.</small>
       </label>
       <label class="check"><input id="grade" type="checkbox" checked /> Color and sharpness boost</label>
+    </section>
+
+    <section class="card">
+      <h2>Sound and music</h2>
+      <label>Background noise
+        <select id="noise">
+          <option value="off">Leave as recorded</option>
+          <option value="light">Reduce steady noise (fans, AC hum, hiss)</option>
+          <option value="strong">Remove more (can thin out very quiet singing)</option>
+        </select>
+      </label>
+      <small>Removes steady background noise. It can't remove people talking, because that would damage the singing too.</small>
+      <label>Background music
+        <select id="music">
+          <option value="none">None</option>
+          <option value="beat">Generated beat that follows your song's tempo</option>
+          <option value="file">My own music file</option>
+        </select>
+      </label>
+      <label class="upload compact" id="musicFileRow" hidden>
+        <span id="musicFileName">Choose a music file (MP3, M4A, WAV…)</span>
+        <input id="musicFile" type="file" accept="audio/*" />
+      </label>
+      <label class="slider" id="musicVolRow" hidden>
+        <span class="slider-title">Music volume: <span id="musicVolLabel">35</span>%</span>
+        <input id="musicVol" type="range" min="0" max="100" value="35" />
+        <small>The music is turned down automatically while you sing.</small>
+      </label>
+      <label class="slider" id="voiceVolRow" hidden>
+        <span class="slider-title">Your performance's volume: <span id="voiceVolLabel">100</span>%</span>
+        <input id="voiceVol" type="range" min="0" max="100" value="100" />
+      </label>
+      <label class="check"><input id="beatCuts" type="checkbox" /> Cut to the beat: switch between a wide shot and a close-up of the singer on the music's bars</label>
+      <small>The beat comes from your music file if you add one, otherwise from your performance.</small>
     </section>
 
     <section class="card">

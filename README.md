@@ -13,6 +13,9 @@ A webpage that turns a landscape performance video into a polished vertical 1080
 - **Color and sharpness boost** (optional).
 - **Fades** in from and out to black.
 - **Timer while it builds:** shows time elapsed and about how long is left, then the total when it's done. It remembers how fast your device was, so later reels get an estimate straight away.
+- **Background noise reduction (optional):** *Reduce* or *Remove more* takes out steady noise such as fans, AC hum, hiss and room rumble. The app measures the video's own noise floor from its quietest moments and tunes ffmpeg's `afftdn` filter to it. In tests with noise under speech, *Reduce* removed about 12 dB and *Remove more* about 26 dB of noise, with the speech level within about 1 dB. It can't remove other people talking.
+- **Background music (optional):** either a **generated beat** (kick, snare and hi-hats synthesised in the browser, placed on your performance's own detected beats, so it follows your tempo and has no copyright issue), or **your own music file**, looped if it's short. The music fades in and out and is turned down automatically while you sing (side-chain ducking). Separate volume sliders for the music and the performance.
+- **Cut to the beat (optional):** finds the beats and bars (from your music file, or from the performance), then switches between a wide shot and a 1.3x close-up of the singer on bar lines, every 2-4 s, with face tracking in both. Without a clear beat it switches every 3 s.
 - **Vocal-friendly audio**: fades, light compression, and loudness normalization to about −14 LUFS, the level most platforms expect.
 
 ## Run it locally
@@ -81,6 +84,7 @@ Long lines wrap onto two lines automatically, and shrink a little if they still 
 
 - `index.html`: the page layout.
 - `style.css`: styling.
+- `beats.js`: beat and bar detection, beat-synced cut plan, the generated drum track and WAV writing. No browser code.
 - `moments.js`: finding the best moment (chorus detection, scoring). No browser code.
 - `editor.js`: pure editing logic (crop path, captions, ffmpeg command). No browser code, so it can be tested separately.
 - `debug.js`: the on-page debug log.

@@ -191,3 +191,9 @@ button.secondary { background: #e4e4ea; color: #1c1c1e; }
   border: 2px solid #7a3cff;
   background: #f3edff;
 }
+
+.upload.compact { padding: 12px; margin-top: 4px; }
+
+.upload.compact span { font-weight: 600; }
+
+.slider-title { display: block; font-weight: 600; }

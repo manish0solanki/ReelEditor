@@ -3,6 +3,7 @@
 import { FFmpeg } from "./vendor/ffmpeg/index.js";
 import { dlog, openPanel } from "./debug.js";
 import { audioFeatures, repetitionCurve, findBestMoments } from "./moments.js";
+import { beatGrid, cutPlan, synthDrums, encodeWav } from "./beats.js";
 import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
   SAMPLE_STEP,
@@ -20,6 +21,9 @@ import {
   summarizeScores,
   findSongBounds,
   singingFlags,
+  noiseFloor,
+  loudnessDb,
+  cutTrackTargets,
   formatTime,
   parseEncodedTime,
   estimateRemaining,
@@ -77,6 +81,18 @@ const els = {
   lyrics: $("lyrics"),
   lyricsWarn: $("lyricsWarn"),
   captionStyle: $("captionStyle"),
+  noise: $("noise"),
+  music: $("music"),
+  musicFile: $("musicFile"),
+  musicFileRow: $("musicFileRow"),
+  musicFileName: $("musicFileName"),
+  musicVol: $("musicVol"),
+  musicVolLabel: $("musicVolLabel"),
+  musicVolRow: $("musicVolRow"),
+  voiceVol: $("voiceVol"),
+  voiceVolLabel: $("voiceVolLabel"),
+  voiceVolRow: $("voiceVolRow"),
+  beatCuts: $("beatCuts"),
   go: $("go"),
   output: $("output"),
   progress: $("progress"),
@@ -401,7 +417,8 @@ function setTrimNote(text) {
 
 // Decodes the video's sound to 16 kHz mono, scores each ~1 s window with YAMNet, and measures
 // loudness and pitch fingerprints (for finding the chorus). Done once per video.
-async function analyzeAudio(file) {
+// Any audio or video file's sound as 16 kHz mono.
+async function decodeMono(file) {
   const t0 = performance.now();
   const bytes = await file.arrayBuffer();
   const decoded = await new OfflineAudioContext(1, 1, 16000).decodeAudioData(bytes);
@@ -410,7 +427,13 @@ async function analyzeAudio(file) {
     const data = decoded.getChannelData(c);
     for (let i = 0; i < data.length; i++) mono[i] += data[i] / decoded.numberOfChannels;
   }
-  dlog("info", `Sound decoded: ${(decoded.duration).toFixed(1)} s in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+  dlog("info", `Sound decoded (${file.name}): ${decoded.duration.toFixed(1)} s in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+  return { mono, sampleRate: decoded.sampleRate };
+}
+
+async function analyzeAudio(file) {
+  const { mono, sampleRate } = await decodeMono(file);
+  const decoded = { sampleRate };
 
   if (!audioClassifier) {
     const { AudioClassifier, FilesetResolver } = await import(AUDIO_URL);
@@ -434,7 +457,7 @@ async function analyzeAudio(file) {
     "info",
     `Sound analysed: classifier ${((t2 - t1) / 1000).toFixed(1)} s, loudness and chorus ${((performance.now() - t2) / 1000).toFixed(1)} s`
   );
-  return { windows, features };
+  return { windows, features, mono, sampleRate };
 }
 
 function saveBestChoice() {
@@ -621,6 +644,132 @@ els.lyrics.addEventListener("input", () => {
     : "";
 });
 
+// ---- Sound and music ----
+const SOUND_KEY = "reelmaker.sound";
+let musicBeatCache = null; // { file, mono, sampleRate } of the chosen music file
+
+// The performance's sound for the reel's stretch, as 16 kHz mono, plus the whole video's sound.
+async function performanceSlice(startT, duration) {
+  let src = analysis && analysis.file === inputFile ? analysis : null;
+  if (!src) src = await decodeMono(inputFile);
+  const { mono, sampleRate } = src;
+  return {
+    whole: mono,
+    mono: mono.subarray(Math.round(startT * sampleRate), Math.round((startT + duration) * sampleRate)),
+    sampleRate,
+  };
+}
+
+// Works out everything the sound options need: the noise floor, the music file to mix in, and the
+// close-up stretches for beat cuts. Returns { noiseFloorDb, music: { name, bytes, volume, duck } | null, closeups }.
+async function prepareSound(startT, duration) {
+  const noise = els.noise.value;
+  const music = els.music.value;
+  const cuts = els.beatCuts.checked;
+  const result = { noiseFloorDb: -60, music: null, closeups: [], notes: [] };
+  if (noise === "off" && music === "none" && !cuts) return result;
+
+  setStatus("Listening to the sound for the music and edit…");
+  const clip = await performanceSlice(startT, duration);
+  if (noise !== "off") {
+    // The quietest moments of the whole video show the background noise best (the clip itself may
+    // be all music); noiseFilters also caps the estimate in case the video never goes quiet.
+    const clipFloor = noiseFloor(loudnessDb(clip.mono, clip.sampleRate));
+    const videoFloor = noiseFloor(loudnessDb(clip.whole, clip.sampleRate));
+    result.noiseFloorDb = Math.min(clipFloor, videoFloor);
+    dlog("info", `Noise floor: clip ${clipFloor.toFixed(1)} dB, whole video ${videoFloor.toFixed(1)} dB (${noise} reduction)`);
+  }
+
+  // The beat to follow: the music file's if there is one, otherwise the performance's.
+  let grid = null;
+  if (music === "file" || cuts || music === "beat") {
+    if (music === "file") {
+      const file = els.musicFile.files[0];
+      if (!file) throw new Error("Choose a music file, or set Background music to None");
+      if (!musicBeatCache || musicBeatCache.file !== file) musicBeatCache = { file, ...(await decodeMono(file)) };
+      const { mono, sampleRate } = musicBeatCache;
+      grid = beatGrid(mono.subarray(0, Math.round(duration * sampleRate)), sampleRate);
+      const musicLength = mono.length / sampleRate;
+      if (musicLength < duration && grid.beats.length) {
+        // The music loops: repeat its beats.
+        const one = grid.beats.filter((b) => b < musicLength);
+        const extend = (list) => {
+          const out = [];
+          for (let k = 0; k * musicLength < duration; k++) for (const b of list) if (b + k * musicLength < duration) out.push(b + k * musicLength);
+          return out;
+        };
+        grid = { ...grid, beats: extend(one), downbeats: extend(grid.downbeats.filter((b) => b < musicLength)) };
+      }
+    } else {
+      grid = beatGrid(clip.mono, clip.sampleRate);
+    }
+    dlog("info", `Beat: ${grid.bpm} BPM, ${grid.beats.length} beats, confidence ${grid.confidence.toFixed(2)}`);
+  }
+
+  if (music === "beat") {
+    let { beats, phase } = grid;
+    if (grid.confidence < 0.15 || beats.length < 4) {
+      // No clear pulse to follow (for example unaccompanied singing): a steady 100 BPM instead.
+      beats = [];
+      for (let t = 0.3; t < duration; t += 0.6) beats.push(t);
+      phase = 0;
+      result.notes.push("No clear beat in the performance, so the drums keep a steady 100 BPM.");
+    }
+    const drums = synthDrums(beats, phase, duration, 44100);
+    result.music = { name: "music.wav", bytes: encodeWav(drums, 44100), volume: Number(els.musicVol.value) / 100, duck: "light" };
+  } else if (music === "file") {
+    const file = els.musicFile.files[0];
+    const ext = (file.name.split(".").pop() || "mp3").toLowerCase().replace(/[^a-z0-9]/g, "") || "mp3";
+    result.music = { name: `music.${ext}`, bytes: new Uint8Array(await file.arrayBuffer()), volume: Number(els.musicVol.value) / 100, duck: "strong" };
+  }
+
+  if (cuts) {
+    result.closeups = cutPlan(grid || { confidence: 0 }, duration);
+    if (!grid || grid.confidence < 0.15) result.notes.push("No clear beat found, so the shots change every 3 seconds.");
+    dlog("info", `Beat cuts: ${result.closeups.length} close-ups: ${result.closeups.map((c) => `${c.a.toFixed(1)}-${c.b.toFixed(1)}`).join(", ")}`);
+  }
+  return result;
+}
+
+function updateSoundOptions() {
+  const music = els.music.value;
+  els.musicFileRow.hidden = music !== "file";
+  els.musicVolRow.hidden = music === "none";
+  els.voiceVolRow.hidden = music === "none";
+  els.musicVolLabel.textContent = els.musicVol.value;
+  els.voiceVolLabel.textContent = els.voiceVol.value;
+  try {
+    localStorage.setItem(
+      SOUND_KEY,
+      JSON.stringify({ noise: els.noise.value, music, musicVol: els.musicVol.value, voiceVol: els.voiceVol.value, cuts: els.beatCuts.checked })
+    );
+  } catch {
+    // ignore
+  }
+}
+
+try {
+  const saved = JSON.parse(localStorage.getItem(SOUND_KEY) || "null");
+  if (saved) {
+    els.noise.value = saved.noise || "off";
+    // A music file can't be remembered, so "My own music file" comes back as None.
+    els.music.value = saved.music === "beat" ? "beat" : "none";
+    if (saved.musicVol) els.musicVol.value = saved.musicVol;
+    if (saved.voiceVol) els.voiceVol.value = saved.voiceVol;
+    els.beatCuts.checked = !!saved.cuts;
+  }
+} catch {
+  // ignore
+}
+for (const el of [els.noise, els.music, els.musicVol, els.voiceVol, els.beatCuts]) {
+  el.addEventListener(el.type === "range" ? "input" : "change", updateSoundOptions);
+}
+els.musicFile.addEventListener("change", () => {
+  const f = els.musicFile.files[0];
+  els.musicFileName.textContent = f ? `Music: ${f.name}` : "Choose a music file (MP3, M4A, WAV…)";
+});
+updateSoundOptions();
+
 els.go.addEventListener("click", async () => {
   const showError = (msg) => {
     els.output.hidden = false;
@@ -680,6 +829,9 @@ els.go.addEventListener("click", async () => {
       }
     }
 
+    const sound = await prepareSound(startT, duration);
+    if (sound.music) usedFiles.push(sound.music.name);
+
     const { args, textFiles } = buildCommand({
       inputName,
       start: startT,
@@ -691,6 +843,11 @@ els.go.addEventListener("click", async () => {
       title: els.title.value.trim(),
       grade: els.grade.checked,
       captionStyle: els.captionStyle.value,
+      noise: els.noise.value,
+      noiseFloorDb: sound.noiseFloorDb,
+      voiceVolume: sound.music ? Number(els.voiceVol.value) / 100 : 1,
+      music: sound.music && { name: sound.music.name, volume: sound.music.volume, duck: sound.music.duck },
+      closeups: sound.closeups,
     });
     for (const f of textFiles) usedFiles.push(f.name);
 
@@ -704,7 +861,12 @@ els.go.addEventListener("click", async () => {
         // already there from an earlier reel
       }
       await ffmpeg.writeFile(FONT_FILE, await loadFont());
-      if (keys) await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys, geometry.axis)));
+      if (keys) {
+        const targets = sound.closeups.length ? cutTrackTargets(geometry) : undefined;
+        await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys, geometry.axis, targets)));
+      }
+      // A copy each time: writeFile hands the buffer over, and a retry would need it again.
+      if (sound.music) await ffmpeg.writeFile(sound.music.name, sound.music.bytes.slice());
       for (const f of textFiles) await ffmpeg.writeFile(f.name, new TextEncoder().encode(f.text));
 
       startEncodingTimer();
@@ -738,6 +900,7 @@ els.go.addEventListener("click", async () => {
 
     const notes = [];
     if (bad.length) notes.push(`${bad.length} lyric line(s) were skipped.`);
+    notes.push(...sound.notes);
     setStatus(`Done! Preview below, then download and upload to Instagram. ${notes.join(" ")}`.trim());
   } catch (err) {
     console.error(err);
