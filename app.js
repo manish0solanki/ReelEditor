@@ -714,6 +714,7 @@ els.file.addEventListener("change", () => {
   if (!file) return;
 
   inputFile = file;
+  document.getElementById("fileName").textContent = file.name;
   const ext = (file.name.split(".").pop() || "mp4").toLowerCase();
   inputName = `input.${ext}`;
   trimToken++; // cancel any analysis still running for the previous video
@@ -1076,6 +1077,8 @@ els.go.addEventListener("click", async () => {
   els.download.hidden = true;
   els.progress.value = 0;
   startTimer(duration);
+  // The button is in a bar at the bottom of the screen: bring the progress into view.
+  els.output.scrollIntoView({ behavior: "smooth", block: "start" });
   let ok = false;
 
   const usedFiles = [inputName, FONT_FILE, "track.txt", "output.mp4"];
@@ -1159,6 +1162,8 @@ els.go.addEventListener("click", async () => {
 
     els.result.src = downloadUrl;
     els.result.hidden = false;
+    // The first frame is the fade-in from black: show a frame from 1 s in until it's played.
+    els.result.addEventListener("loadeddata", () => { els.result.currentTime = Math.min(1, duration / 2); }, { once: true });
     els.download.href = downloadUrl;
     els.download.hidden = false;
     els.progress.value = 1;
@@ -1168,6 +1173,7 @@ els.go.addEventListener("click", async () => {
     if (bad.length) notes.push(`${bad.length} lyric line(s) were skipped.`);
     notes.push(...sound.notes);
     setStatus(`Done! Preview below, then download and upload to Instagram. ${notes.join(" ")}`.trim());
+    els.output.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
     console.error(err);
     openPanel();

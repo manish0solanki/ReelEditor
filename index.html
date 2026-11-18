@@ -2,30 +2,69 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#f5f4fa" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0f0e14" media="(prefers-color-scheme: dark)" />
   <title>Reel Maker</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main>
-    <h1>Reel Maker</h1>
-    <p class="hint">Upload any performance video and get a polished vertical 1080×1920 reel for Instagram. Everything runs in your browser, so the video never leaves your device.</p>
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" /></svg>
+      </span>
+      <div>
+        <h1>Reel Maker</h1>
+        <p class="tagline">Performance video in, 1080×1920 reel out.</p>
+      </div>
+    </div>
+    <span class="pill" title="Everything runs on your device. Your video is never uploaded.">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3h1a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1zm2 0h6V7a3 3 0 0 0-6 0z" /></svg>
+      Private
+    </span>
+  </header>
 
-    <section class="card">
-      <label class="upload">
-        <span>Choose a video</span>
+  <main>
+    <!-- 1. Video -->
+    <section class="card" aria-labelledby="h-video">
+      <div class="card-head">
+        <span class="step">1</span>
+        <div>
+          <h2 id="h-video">Video</h2>
+          <p class="sub">Any orientation. It stays on your device.</p>
+        </div>
+      </div>
+      <label class="upload" id="dropzone">
+        <svg class="upload-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l5 5h-3v6h-4V8H7zm-8 14h2v2h12v-2h2v4H4z" /></svg>
+        <span class="upload-title" id="fileName">Choose or drop a video</span>
+        <span class="upload-sub">MP4, MOV and other phone videos</span>
         <input id="file" type="file" accept="video/*" />
       </label>
       <video id="preview" controls playsinline></video>
-      <p class="meta">Video length: <span id="duration">–</span> seconds</p>
+      <p class="chips"><span class="chip">Length <strong><span id="duration">–</span> s</strong></span></p>
     </section>
 
-    <section class="card">
-      <h2>Trim</h2>
-      <label class="check"><input id="autotrim" type="checkbox" checked /> Trim to the song automatically: start 2 seconds before the singing, end when the song ends</label>
-      <label class="check"><input id="best" type="checkbox" /> Find the best moment instead of the whole song: the chorus, strongest vocals and most energy</label>
-      <div id="bestOptions" class="best-options" hidden>
-        <label>Reel length
+    <!-- 2. Trim -->
+    <section class="card" aria-labelledby="h-trim">
+      <div class="card-head">
+        <span class="step">2</span>
+        <div>
+          <h2 id="h-trim">Trim</h2>
+          <p class="sub">The whole song, or just its best moment.</p>
+        </div>
+      </div>
+      <label class="check">
+        <input id="autotrim" type="checkbox" checked />
+        <span class="check-text">Trim to the song<small>Starts 2 s before the singing, ends when the song does</small></span>
+      </label>
+      <label class="check">
+        <input id="best" type="checkbox" />
+        <span class="check-text">Best moment only<small>The chorus, strongest vocals and most energy</small></span>
+      </label>
+      <div id="bestOptions" class="indent" hidden>
+        <label class="field">Length
           <select id="bestLength">
             <option value="15">15 seconds</option>
             <option value="30" selected>30 seconds</option>
@@ -35,113 +74,155 @@
         </label>
         <div id="moments" class="moments"></div>
       </div>
-      <p id="trimNote" class="meta" role="status" hidden></p>
+      <p id="trimNote" class="note" role="status" hidden></p>
       <div class="row">
-        <label>Start (m:ss or seconds)
-          <input id="start" type="text" value="0" />
+        <label class="field">Start
+          <input id="start" type="text" value="0" inputmode="decimal" placeholder="m:ss" />
         </label>
-        <label>End (m:ss or seconds)
-          <input id="end" type="text" value="30" />
+        <label class="field">End
+          <input id="end" type="text" value="30" inputmode="decimal" placeholder="m:ss" />
         </label>
       </div>
+      <p class="help">Times as m:ss or seconds, e.g. 1:23 or 83.</p>
     </section>
 
-    <section class="card">
-      <h2>Look</h2>
-      <label class="check"><input id="track" type="checkbox" checked /> Keep the singer centered (face tracking)</label>
-      <div id="facePicker" class="face-picker" hidden>
-        <p id="faceNote" class="meta"></p>
+    <!-- 3. Look -->
+    <section class="card" aria-labelledby="h-look">
+      <div class="card-head">
+        <span class="step">3</span>
+        <div>
+          <h2 id="h-look">Look</h2>
+          <p class="sub">Framing and colour.</p>
+        </div>
+      </div>
+      <label class="check">
+        <input id="track" type="checkbox" checked />
+        <span class="check-text">Keep the singer centred<small>Face tracking follows them across the frame</small></span>
+      </label>
+      <div id="facePicker" class="indent" hidden>
+        <p id="faceNote" class="note"></p>
         <div id="faces" class="faces" role="group" aria-label="Who to follow"></div>
       </div>
       <label class="slider">
-        <span class="slider-title">Fallback crop position: <span id="posLabel">50</span>%</span>
+        <span class="slider-title">Fallback position <span class="value"><span id="posLabel">50</span>%</span></span>
         <input id="pos" type="range" min="0" max="100" value="50" />
         <small>Used when tracking is off or no face is found.</small>
       </label>
-      <label class="check"><input id="grade" type="checkbox" checked /> Color and sharpness boost</label>
+      <label class="check">
+        <input id="grade" type="checkbox" checked />
+        <span class="check-text">Colour and sharpness boost</span>
+      </label>
     </section>
 
-    <section class="card">
-      <h2>Sound and music</h2>
+    <!-- 4. Sound and music -->
+    <section class="card" aria-labelledby="h-sound">
+      <div class="card-head">
+        <span class="step">4</span>
+        <div>
+          <h2 id="h-sound">Sound and music</h2>
+          <p class="sub">Clean up the sound, add music, edit to the beat.</p>
+        </div>
+      </div>
       <label class="slider" id="voiceVolRow">
-        <span class="slider-title">Clip volume: <span id="voiceVolLabel">100</span>%</span>
+        <span class="slider-title">Clip volume <span class="value"><span id="voiceVolLabel">100</span>%</span></span>
         <input id="voiceVol" type="range" min="0" max="100" step="1" value="100" />
-        <small>The video's own sound. 0% mutes it, for example to keep only the music.</small>
+        <small>The video's own sound. 0% mutes it, e.g. to keep only the music.</small>
       </label>
-      <label>Background noise
+      <label class="field">Background noise
         <select id="noise">
           <option value="off">Leave as recorded</option>
-          <option value="light">Reduce steady noise (fans, AC hum, hiss)</option>
-          <option value="strong">Remove more (can thin out very quiet singing)</option>
+          <option value="light">Reduce</option>
+          <option value="strong">Remove more</option>
         </select>
+        <small>Removes steady noise like fans, AC hum and hiss. "Remove more" can thin out very quiet singing. It can't remove people talking.</small>
       </label>
-      <small>Removes steady background noise. It can't remove people talking, because that would damage the singing too.</small>
-      <label>Background music
+      <label class="field">Background music
         <select id="music">
           <option value="none">None</option>
-          <option value="beat">Generated beat that follows your song's tempo</option>
+          <option value="beat">Generated beat</option>
           <option value="file">My own music file</option>
         </select>
+        <small>The generated beat is drums made to follow your performance's tempo.</small>
       </label>
       <label class="upload compact" id="musicFileRow" hidden>
-        <span id="musicFileName">Choose a music file (MP3, M4A, WAV…)</span>
+        <svg class="upload-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18a3 3 0 1 1-2-2.83V5l12-2v11a3 3 0 1 1-2-2.83V7.4l-8 1.33z" /></svg>
+        <span class="upload-title" id="musicFileName">Choose a music file (MP3, M4A, WAV…)</span>
         <input id="musicFile" type="file" accept="audio/*" />
       </label>
       <div id="matchRow" hidden>
-        <label>Match the music to
+        <label class="field">Match the music to
           <select id="matchSource">
-            <option value="auto" selected>Automatic: the beat in the video's sound, or else the movement</option>
-            <option value="sound">The beat in the video's sound</option>
-            <option value="movement">The people's movement (steps, claps, moves)</option>
-            <option value="off">Don't match: play the music as it is</option>
+            <option value="auto" selected>Automatic</option>
+            <option value="sound">The video's sound</option>
+            <option value="movement">The people's movement</option>
+            <option value="off">Don't match</option>
           </select>
+          <small>Speeds the music up or down slightly (at most 10%, same pitch) and lines up its bars with the video's, so steps and moves land on the beat. Automatic uses the sound's beat, or the movement if the sound has none. Reading movement takes about half the clip's length.</small>
         </label>
-        <small>Speeds the music up or down a little (at most 10%, without changing its pitch) and starts it where its bars line up with the video's, so steps and moves land on the music's beats. Reading the movement plays the clip silently at double speed first, so it takes about half the clip's length.</small>
       </div>
       <label class="slider" id="musicVolRow" hidden>
-        <span class="slider-title">Music volume: <span id="musicVolLabel">35</span>%</span>
+        <span class="slider-title">Music volume <span class="value"><span id="musicVolLabel">35</span>%</span></span>
         <input id="musicVol" type="range" min="0" max="100" value="35" />
-        <small>The music is turned down automatically while you sing.</small>
+        <small>The music dips automatically while you sing.</small>
       </label>
-
-      <label class="check"><input id="beatCuts" type="checkbox" /> Cut to the beat: switch between a wide shot and a close-up of the singer on the music's bars</label>
-      <small>The beat comes from your music file if you add one, otherwise from your performance's sound, or its movement if the sound has no clear beat.</small>
+      <label class="check">
+        <input id="beatCuts" type="checkbox" />
+        <span class="check-text">Cut to the beat<small>Switches between a wide shot and a close-up on the bars</small></span>
+      </label>
     </section>
 
-    <section class="card">
-      <h2>Text</h2>
-      <label>Song title (shows for the first 3–4 seconds)
+    <!-- 5. Captions -->
+    <section class="card" aria-labelledby="h-text">
+      <div class="card-head">
+        <span class="step">5</span>
+        <div>
+          <h2 id="h-text">Title and captions</h2>
+          <p class="sub">Optional text over the reel.</p>
+        </div>
+      </div>
+      <label class="field">Song title
         <input id="title" type="text" placeholder="e.g. Tum Hi Ho" />
+        <small>Shows for the first 3–4 seconds.</small>
       </label>
-      <label>Lyrics: one line per lyric, starting with its time in the original video
-        <textarea id="lyrics" rows="8" placeholder="0:12 First line of the song&#10;0:17-0:20 Second line&#10;0:22 Third line"></textarea>
+      <label class="field">Lyrics
+        <textarea id="lyrics" rows="6" placeholder="0:12 First line of the song&#10;0:17-0:20 Second line&#10;0:22 Third line"></textarea>
+        <small>One line per lyric, starting with its time in the original video. Add an end time like <code>0:17-0:20</code> for tighter word timing. Latin alphabet only (e.g. romanized Hindi).</small>
       </label>
       <p id="lyricsWarn" class="warn" hidden></p>
-      <small>Use the Latin alphabet (for example, romanized Hindi). Other scripts may not display. Word timing is estimated; for a tighter fit, add when the line ends, like <code>0:17-0:20</code>.</small>
-      <label>Caption style
+      <label class="field">Caption style
         <select id="captionStyle">
-          <option value="pop" selected>Bold pop: 2–3 big words at a time, current word highlighted</option>
-          <option value="karaoke">Karaoke: whole line, words light up as they're sung</option>
-          <option value="classic">Classic: whole line, plain</option>
+          <option value="pop" selected>Bold pop</option>
+          <option value="karaoke">Karaoke</option>
+          <option value="classic">Classic</option>
         </select>
+        <small>Bold pop: 2–3 big words at a time, current word highlighted. Karaoke: the whole line, words light up as they're sung.</small>
       </label>
     </section>
 
-    <section class="card">
-      <button id="go" type="button">Make reel</button>
-    </section>
-
-    <section class="card" id="output" hidden>
+    <!-- Result -->
+    <section class="card output" id="output" hidden aria-live="polite">
+      <div class="card-head">
+        <span class="step done" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z" /></svg>
+        </span>
+        <div>
+          <h2>Your reel</h2>
+          <p id="timer" class="timer" aria-live="off" hidden></p>
+        </div>
+      </div>
       <progress id="progress" value="0" max="1"></progress>
-      <p id="timer" class="timer" aria-live="off" hidden></p>
       <p id="status" role="status"></p>
       <video id="result" controls playsinline hidden></video>
-      <a id="download" class="button" download="reel.mp4" hidden>Download reel</a>
+      <a id="download" class="button primary wide" download="reel.mp4" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.2l3.1-3.1 1.4 1.4L12 16l-5.5-5.5 1.4-1.4 3.1 3.1zM5 18h14v2H5z" /></svg>
+        Download reel
+      </a>
     </section>
+
     <details class="card debug" id="debug">
       <summary>Debug log</summary>
       <div class="debug-tools">
-        <label>Video engine
+        <label class="field">Video engine
           <select id="engineChoice">
             <option value="auto">Auto (fast if it works, else standard)</option>
             <option value="multi">Fast (multi-threaded) only</option>
@@ -149,14 +230,21 @@
           </select>
         </label>
         <div class="debug-buttons">
-          <button id="debugCopy" type="button">Copy log</button>
-          <button id="debugClear" type="button" class="secondary">Clear</button>
+          <button id="debugCopy" type="button" class="button small">Copy log</button>
+          <button id="debugClear" type="button" class="button small secondary">Clear</button>
         </div>
       </div>
-      <p id="fastLink" class="meta"></p>
+      <p id="fastLink" class="help"></p>
       <pre id="debugLog"></pre>
     </details>
   </main>
+
+  <div class="action-bar">
+    <button id="go" type="button" class="button primary wide">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Make reel</span>
+    </button>
+  </div>
 
   <script type="module" src="debug.js"></script>
   <script type="module" src="app.js"></script>
