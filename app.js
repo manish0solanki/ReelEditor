@@ -2,6 +2,7 @@
 // from the page's own site, so these two packages are served from vendor/ instead of a CDN.
 import { FFmpeg } from "./vendor/ffmpeg/index.js";
 import { dlog, openPanel } from "./debug.js";
+import { audioFeatures, repetitionCurve, findBestMoments } from "./moments.js";
 import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
   SAMPLE_STEP,
@@ -18,6 +19,7 @@ import {
   AUDIO_LABELS,
   summarizeScores,
   findSongBounds,
+  singingFlags,
   formatTime,
   parseEncodedTime,
   estimateRemaining,
@@ -62,6 +64,10 @@ const els = {
   start: $("start"),
   end: $("end"),
   autotrim: $("autotrim"),
+  best: $("best"),
+  bestLength: $("bestLength"),
+  bestOptions: $("bestOptions"),
+  moments: $("moments"),
   trimNote: $("trimNote"),
   track: $("track"),
   pos: $("pos"),
@@ -382,16 +388,21 @@ els.pos.addEventListener("input", () => {
 });
 
 let audioClassifier = null;
-let trimJob = null; // promise of the running song detection, so "Make reel" can wait for it
+let trimJob = null; // promise of the running sound analysis, so "Make reel" can wait for it
 let trimToken = 0;
+let analysis = null; // { file, duration, windows, features } for the current video
+let moments = [];
+const BEST_KEY = "reelmaker.best"; // remembers the "best moment" checkbox and length
 
 function setTrimNote(text) {
   els.trimNote.hidden = !text;
   els.trimNote.textContent = text;
 }
 
-// Decodes the video's sound to 16 kHz mono and scores each ~1 s window with YAMNet.
-async function classifyAudio(file) {
+// Decodes the video's sound to 16 kHz mono, scores each ~1 s window with YAMNet, and measures
+// loudness and pitch fingerprints (for finding the chorus). Done once per video.
+async function analyzeAudio(file) {
+  const t0 = performance.now();
   const bytes = await file.arrayBuffer();
   const decoded = await new OfflineAudioContext(1, 1, 16000).decodeAudioData(bytes);
   const mono = new Float32Array(decoded.length);
@@ -399,6 +410,7 @@ async function classifyAudio(file) {
     const data = decoded.getChannelData(c);
     for (let i = 0; i < data.length; i++) mono[i] += data[i] / decoded.numberOfChannels;
   }
+  dlog("info", `Sound decoded: ${(decoded.duration).toFixed(1)} s in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
 
   if (!audioClassifier) {
     const { AudioClassifier, FilesetResolver } = await import(AUDIO_URL);
@@ -409,48 +421,139 @@ async function classifyAudio(file) {
       categoryAllowlist: AUDIO_LABELS,
     });
   }
-  const results = audioClassifier.classify(mono, decoded.sampleRate);
-  return results.map((r) => {
+  const t1 = performance.now();
+  const windows = audioClassifier.classify(mono, decoded.sampleRate).map((r) => {
     const scores = {};
     for (const c of r.classifications[0]?.categories || []) scores[c.categoryName] = c.score;
     return { t: r.timestampMs / 1000, ...summarizeScores(scores) };
   });
+  const t2 = performance.now();
+  const features = audioFeatures(mono, decoded.sampleRate);
+  features.repetition = repetitionCurve(features.chroma, features.hop);
+  dlog(
+    "info",
+    `Sound analysed: classifier ${((t2 - t1) / 1000).toFixed(1)} s, loudness and chorus ${((performance.now() - t2) / 1000).toFixed(1)} s`
+  );
+  return { windows, features };
 }
 
-// Fills Start and End with the song's bounds. Leaves them alone if detection fails.
-async function autoTrim(file, duration) {
-  const token = ++trimToken;
-  setTrimNote("Listening for where the singing starts and the song ends…");
+function saveBestChoice() {
   try {
-    const windows = await classifyAudio(file);
+    localStorage.setItem(BEST_KEY, JSON.stringify({ on: els.best.checked, length: els.bestLength.value }));
+  } catch {
+    // ignore
+  }
+}
+
+function renderMoments(selected) {
+  els.moments.textContent = "";
+  moments.forEach((m, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "moment";
+    b.setAttribute("aria-pressed", String(i === selected));
+    const when = document.createElement("strong");
+    when.textContent = `${i + 1}. ${formatTime(m.start)} – ${formatTime(m.end)}`;
+    const score = document.createElement("span");
+    score.className = "score";
+    score.textContent = m.parts ? `score ${m.score}` : "";
+    const why = document.createElement("small");
+    why.textContent = m.reasons.join(" · ");
+    b.append(when, score, why);
+    b.addEventListener("click", () => useMoment(i));
+    els.moments.append(b);
+  });
+}
+
+function useMoment(i) {
+  const m = moments[i];
+  if (!m) return;
+  els.start.value = formatTime(m.start);
+  els.end.value = formatTime(m.end);
+  renderMoments(i);
+  setTrimNote(
+    `Using moment ${i + 1}: ${formatTime(m.start)} to ${formatTime(m.end)} (${formatTime(m.end - m.start)} long). ` +
+      (moments.length > 1 ? "Tap another one above to use it instead, or adjust Start and End." : "Adjust Start and End if needed.")
+  );
+}
+
+// Sets Start and End from the analysis: the best moment, or the whole song.
+function applyTrim() {
+  if (!analysis || analysis.file !== inputFile) return;
+  const { windows, features, duration } = analysis;
+  const b = findSongBounds(windows, duration, { leadIn: LEAD_IN });
+
+  if (els.best.checked) {
+    moments = findBestMoments({
+      features,
+      windows,
+      sings: singingFlags(windows),
+      duration,
+      length: Number(els.bestLength.value),
+      song: b.found ? { start: b.start, end: b.end } : null,
+    });
+    dlog("info", `Best moments: ${moments.map((m) => `${formatTime(m.start)}-${formatTime(m.end)} (${m.score})`).join(", ")}`);
+    if (moments.length) useMoment(0);
+    else setTrimNote("Couldn't pick a best moment in this video. Set Start and End yourself.");
+    return;
+  }
+
+  moments = [];
+  els.moments.textContent = "";
+  if (!els.autotrim.checked) {
+    setTrimNote("");
+    return;
+  }
+  if (!b.found) {
+    setTrimNote("Couldn't find a song in this video's sound. Set Start and End yourself.");
+    return;
+  }
+  els.start.value = formatTime(b.start);
+  els.end.value = formatTime(b.end);
+  const length = b.end - b.start;
+  const parts = [
+    b.found === "singing"
+      ? `Singing starts at ${formatTime(b.singStart)} and the song ends at ${formatTime(b.songEnd)}.`
+      : `Couldn't pick out the singing, so this is trimmed to the music (${formatTime(b.singStart)} to ${formatTime(b.songEnd)}).`,
+    `Reel length ${formatTime(length)}. Adjust Start or End if needed.`,
+  ];
+  if (length > 180) parts.push("Instagram reels can be at most 3 minutes, so you may need to shorten it.");
+  else if (length > 90) parts.push("Long reels take several minutes to build on a phone.");
+  setTrimNote(parts.join(" "));
+}
+
+async function runAnalysis(file, duration) {
+  const token = ++trimToken;
+  setTrimNote(
+    els.best.checked
+      ? "Listening for the best moment (chorus, strongest vocals, most energy)…"
+      : "Listening for where the singing starts and the song ends…"
+  );
+  try {
+    const result = await analyzeAudio(file);
     if (token !== trimToken) return; // a different video was picked meanwhile
-    const b = findSongBounds(windows, duration, { leadIn: LEAD_IN });
-    if (!b.found) {
-      setTrimNote("Couldn't find a song in this video's sound. Set Start and End yourself.");
-      return;
-    }
-    els.start.value = formatTime(b.start);
-    els.end.value = formatTime(b.end);
-    const length = b.end - b.start;
-    const parts = [
-      b.found === "singing"
-        ? `Singing starts at ${formatTime(b.singStart)} and the song ends at ${formatTime(b.songEnd)}.`
-        : `Couldn't pick out the singing, so this is trimmed to the music (${formatTime(b.singStart)} to ${formatTime(b.songEnd)}).`,
-      `Reel length ${formatTime(length)}. Adjust Start or End if needed.`,
-    ];
-    if (length > 180) parts.push("Instagram reels can be at most 3 minutes, so you may need to shorten it.");
-    else if (length > 90) parts.push("Long reels take several minutes to build on a phone.");
-    setTrimNote(parts.join(" "));
+    analysis = { file, duration, ...result };
+    applyTrim();
   } catch (err) {
-    console.warn("Song detection failed", err);
+    console.warn("Sound analysis failed", err);
     if (token === trimToken) setTrimNote("Couldn't analyse the sound on this device. Set Start and End yourself.");
   }
 }
 
-function startAutoTrim() {
+// Called when a video is picked or an option changes: analyse once, then reuse the results.
+function updateTrim() {
+  els.bestOptions.hidden = !els.best.checked;
   const d = els.preview.duration;
   if (!inputFile || !Number.isFinite(d)) return;
-  trimJob = autoTrim(inputFile, d);
+  if (!els.autotrim.checked && !els.best.checked) {
+    trimToken++;
+    moments = [];
+    els.moments.textContent = "";
+    setTrimNote("");
+    return;
+  }
+  if (analysis && analysis.file === inputFile) applyTrim();
+  else trimJob = runAnalysis(inputFile, d);
 }
 
 els.file.addEventListener("change", () => {
@@ -460,8 +563,11 @@ els.file.addEventListener("change", () => {
   inputFile = file;
   const ext = (file.name.split(".").pop() || "mp4").toLowerCase();
   inputName = `input.${ext}`;
-  trimToken++; // cancel any detection still running for the previous video
+  trimToken++; // cancel any analysis still running for the previous video
   trimJob = null;
+  analysis = null;
+  moments = [];
+  els.moments.textContent = "";
   setTrimNote("");
 
   els.preview.src = URL.createObjectURL(file);
@@ -470,29 +576,42 @@ els.file.addEventListener("change", () => {
     els.duration.textContent = d.toFixed(1);
     els.start.value = "0";
     els.end.value = String(Math.min(d, 45).toFixed(1));
-    if (els.autotrim.checked) startAutoTrim();
+    updateTrim();
   };
   setStatus("");
   els.output.hidden = true;
 });
 
-// Typing a time yourself takes over from detection that's still running.
+// Typing a time yourself takes over from analysis that's still running.
 for (const input of [els.start, els.end]) {
   input.addEventListener("input", () => {
     if (els.trimNote.textContent.startsWith("Listening")) {
       trimToken++;
       setTrimNote("");
     }
+    if (moments.length) renderMoments(-1); // no moment is selected any more
   });
 }
 
-els.autotrim.addEventListener("change", () => {
-  if (els.autotrim.checked) startAutoTrim();
-  else {
-    trimToken++;
-    setTrimNote("");
-  }
+els.autotrim.addEventListener("change", updateTrim);
+els.best.addEventListener("change", () => {
+  saveBestChoice();
+  updateTrim();
 });
+els.bestLength.addEventListener("change", () => {
+  saveBestChoice();
+  updateTrim();
+});
+try {
+  const saved = JSON.parse(localStorage.getItem(BEST_KEY) || "null");
+  if (saved) {
+    els.best.checked = !!saved.on;
+    if (saved.length) els.bestLength.value = saved.length;
+  }
+} catch {
+  // ignore
+}
+els.bestOptions.hidden = !els.best.checked;
 
 els.lyrics.addEventListener("input", () => {
   const { bad } = parseLyrics(els.lyrics.value);

@@ -343,6 +343,17 @@ const MIN_VOCAL = 0.008; // below this a window never counts as singing
 const VOCAL_FRACTION = 0.1; // ...and it must reach this share of the clip's typical strong vocals
 const MUSIC_MIN = 0.3; // a window counts as music (for the outro) above this
 
+// Which windows have singing: vocal score above a threshold relative to the clip's typical strong
+// vocals, and music outweighing speech (so talking never counts).
+export function singingFlags(windows) {
+  // "Typical strong vocals" = 90th percentile of windows with any vocal score at all. Using the
+  // single loudest window instead lets one spike raise the bar above the quieter opening lines.
+  const voiced = windows.map((w) => w.vocal).filter((v) => v >= 0.004).sort((a, b) => a - b);
+  const strong = voiced.length ? voiced[Math.floor(0.9 * (voiced.length - 1))] : 0;
+  const vocalThr = Math.max(MIN_VOCAL, VOCAL_FRACTION * strong);
+  return windows.map((w) => w.vocal >= vocalThr && w.music + w.vocal > w.speech);
+}
+
 // windows: [{ t, vocal, speech, music, crowd }] in time order, t = window start in seconds.
 // Returns { start, end, singStart, songEnd, found } where found is "singing", "music" or null.
 export function findSongBounds(windows, duration, { leadIn = 2, tail = 0.5 } = {}) {
@@ -350,12 +361,7 @@ export function findSongBounds(windows, duration, { leadIn = 2, tail = 0.5 } = {
   if (!windows.length) return none;
   const hop = windows.length > 1 ? windows[1].t - windows[0].t : 0.975;
 
-  // "Typical strong vocals" = 90th percentile of windows with any vocal score at all. Using the
-  // single loudest window instead lets one spike raise the bar above the quieter opening lines.
-  const voiced = windows.map((w) => w.vocal).filter((v) => v >= 0.004).sort((a, b) => a - b);
-  const strong = voiced.length ? voiced[Math.floor(0.9 * (voiced.length - 1))] : 0;
-  const vocalThr = Math.max(MIN_VOCAL, VOCAL_FRACTION * strong);
-  const sings = windows.map((w) => w.vocal >= vocalThr && w.music + w.vocal > w.speech);
+  const sings = singingFlags(windows);
   const musical = windows.map(
     (w, i) => sings[i] || (w.music >= MUSIC_MIN && w.music > w.speech && w.music > w.crowd)
   );
