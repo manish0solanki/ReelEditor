@@ -114,10 +114,38 @@
       </label>
     </section>
 
-    <!-- 4. Sound and music -->
-    <section class="card" aria-labelledby="h-sound">
+    <!-- 4. B-roll -->
+    <section class="card" aria-labelledby="h-broll">
       <div class="card-head">
         <span class="step">4</span>
+        <div>
+          <h2 id="h-broll">B-roll</h2>
+          <p class="sub">Cutaway clips and photos over the performance.</p>
+        </div>
+      </div>
+      <label class="upload compact">
+        <svg class="upload-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h11a2 2 0 0 1 2 2v2.5l4-2.5v10l-4-2.5V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" /></svg>
+        <span class="upload-title">Add clips or photos</span>
+        <input id="brollFiles" type="file" accept="video/*,image/jpeg,image/png,image/webp" multiple />
+      </label>
+      <div id="brollList" class="broll-list"></div>
+      <div id="brollOptions" hidden>
+        <label class="field">How often
+          <select id="brollEvery">
+            <option value="12">Now and then</option>
+            <option value="8" selected>Regularly</option>
+            <option value="5">Often</option>
+          </select>
+          <small>About every 12, 8 or 5 seconds. Each shot lasts about 2.5 s and fades in and out. They go where there's least singing, on the bar lines, never over the opening title or the ending, and the sound stays the performance's. Clips play from their middle; photos (JPG or PNG) slowly zoom.</small>
+        </label>
+      </div>
+      <p class="help" id="brollNote">Shots of the crowd, the venue, the band or your instrument work well.</p>
+    </section>
+
+    <!-- 5. Sound and music -->
+    <section class="card" aria-labelledby="h-sound">
+      <div class="card-head">
+        <span class="step">5</span>
         <div>
           <h2 id="h-sound">Sound and music</h2>
           <p class="sub">Clean up the sound, add music, edit to the beat.</p>
@@ -183,10 +211,10 @@
       </div>
     </section>
 
-    <!-- 5. Captions -->
+    <!-- 6. Captions -->
     <section class="card" aria-labelledby="h-text">
       <div class="card-head">
-        <span class="step">5</span>
+        <span class="step">6</span>
         <div>
           <h2 id="h-text">Title and captions</h2>
           <p class="sub">Optional text over the reel.</p>

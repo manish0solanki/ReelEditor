@@ -158,7 +158,8 @@ export function noiseFloor(rmsDb) {
 // move taking ZOOM_MOVE seconds and centred on the bar line it belongs to.
 export const CLOSEUP_ZOOM = 1.25;
 export const ZOOM_MOVE = 0.6;
-export const CUT_FPS = 30; // zoompan needs a fixed frame rate to keep the picture in sync with the sound
+export const CUT_FPS = 30;
+const BROLL_FADE_S = 0.3; // b-roll fades in and out over this long // zoompan needs a fixed frame rate to keep the picture in sync with the sound
 
 // Where the zoom aims, as a fraction of the cropped picture: centred along the tracking axis (the crop
 // already follows the face there) and nearer the top across it (faces are usually in the upper part).
@@ -380,6 +381,7 @@ export function buildCommand({
   transition = "smooth", // one of TRANSITIONS
   beats = [], // reel-time beats and bar lines, for the "bounce" style
   downbeats = [],
+  broll = [], // [{ name, at, len, offset, image }]: cutaway shots laid over the performance
 }) {
   const textFiles = [];
   const v = [];
@@ -428,6 +430,10 @@ export function buildCommand({
     v.push(...gradeFilters, ...toFrame);
   }
 
+  // Everything so far frames the performance; b-roll goes on top of that, and the text and fades on
+  // top of the b-roll.
+  const framing = v.splice(0, v.length);
+
   if (title) {
     addTextBlock({
       v, textFiles, prefix: "title", text: title, fit: TITLE_FIT,
@@ -459,14 +465,16 @@ export function buildCommand({
   const LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11";
 
   const inputs = ["-ss", String(start), "-i", inputName];
-  let audioArgs;
+  const graphs = []; // parts of one -filter_complex
+  const maps = [];
+  let audioArgs = [];
   if (music) {
     // Music: looped if it's shorter than the reel, faded in and out, and "ducked" (turned down)
     // while the performance is loud, so the singing stays on top.
     inputs.push("-stream_loop", "-1", "-i", music.name);
     const fadeOut = Math.max(0, duration - 1.5).toFixed(2);
     const duck = music.duck === "light" ? "threshold=0.06:ratio=3" : "threshold=0.03:ratio=8";
-    const graph =
+    graphs.push(
       // With music, the clip's volume sets the balance before the mix (and the ducking follows it).
       `[0:a]${[...voice, ...(voiceVolume !== 1 ? [`volume=${voiceVolume}`] : [])].join(",")},asplit[voice][key];` +
       // Matched to the video's beat: atempo changes the speed (not the pitch), then the sped-up music
@@ -475,17 +483,58 @@ export function buildCommand({
       `${music.start > 0 ? `atrim=start=${music.start.toFixed(3)},asetpts=PTS-STARTPTS,` : ""}` +
       `aresample=48000,volume=${music.volume},afade=t=in:st=0:d=1,afade=t=out:st=${fadeOut}:d=1.5[music];` +
       `[music][key]sidechaincompress=${duck}:attack=15:release=350[ducked];` +
-      `[voice][ducked]amix=inputs=2:duration=first:normalize=0,${LOUDNORM}[aout]`;
-    audioArgs = ["-filter_complex", graph, "-map", "0:v:0", "-map", "[aout]"];
+      `[voice][ducked]amix=inputs=2:duration=first:normalize=0,${LOUDNORM}[aout]`
+    );
   } else {
     // Without music, the clip's volume goes after loudnorm, which would otherwise undo it.
     audioArgs = ["-af", [...voice, LOUDNORM, ...(voiceVolume !== 1 ? [`volume=${voiceVolume}`] : [])].join(",")];
   }
 
+  let videoArgs;
+  if (broll.length) {
+    // B-roll: each shot is its own input (trimmed to its stretch), filled to 9:16, faded in and out
+    // (alpha), moved to its moment, and laid over the framed performance. Photos slowly zoom.
+    const first = music ? 2 : 1;
+    const chains = [`[0:v]${framing.join(",") || "null"}[base]`];
+    let last = "base";
+    broll.forEach((b, i) => {
+      if (b.image) inputs.push("-loop", "1", "-framerate", String(CUT_FPS), "-t", b.len.toFixed(2), "-i", b.name);
+      else inputs.push("-ss", (b.offset || 0).toFixed(2), "-t", b.len.toFixed(2), "-i", b.name);
+      const fill = [
+        `fps=${CUT_FPS}`,
+        `scale=${FRAME_W}:${FRAME_H}:force_original_aspect_ratio=increase`,
+        `crop=${FRAME_W}:${FRAME_H}`,
+        ...(b.image
+          ? [`zoompan=z='1+0.08*it/${b.len.toFixed(2)}':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=1:s=${FRAME_W}x${FRAME_H}:fps=${CUT_FPS}`]
+          : []),
+        "setsar=1",
+        "format=yuva420p",
+        `fade=t=in:st=0:d=${BROLL_FADE_S}:alpha=1`,
+        `fade=t=out:st=${(b.len - BROLL_FADE_S).toFixed(2)}:d=${BROLL_FADE_S}:alpha=1`,
+        `setpts=PTS-STARTPTS+${b.at.toFixed(3)}/TB`,
+      ];
+      chains.push(`[${first + i}:v]${fill.join(",")}[b${i}]`);
+      chains.push(`[${last}][b${i}]overlay=eof_action=pass:format=auto[o${i}]`);
+      last = `o${i}`;
+    });
+    chains.push(`[${last}]${[...v, "format=yuv420p"].join(",")}[vout]`);
+    graphs.unshift(chains.join(";"));
+    maps.push("-map", "[vout]");
+    videoArgs = [];
+  } else {
+    videoArgs = ["-vf", [...framing, ...v].join(",")];
+    if (graphs.length) maps.push("-map", "0:v:0");
+  }
+  if (graphs.length) {
+    if (music) maps.push("-map", "[aout]");
+    else maps.push("-map", "0:a:0");
+    audioArgs = [...audioArgs, "-filter_complex", graphs.join(";"), ...maps];
+  }
+
   const args = [
     ...inputs,
     "-t", String(duration),
-    "-vf", v.join(","),
+    ...videoArgs,
     ...audioArgs,
     "-c:v", "libx264",
     // ultrafast is about 2x quicker than veryfast in the browser. Its files are larger, so the quality

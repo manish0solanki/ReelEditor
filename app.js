@@ -6,6 +6,7 @@ import { audioFeatures, repetitionCurve, findBestMoments } from "./moments.js";
 import { beatGrid, cutPlan, synthDrums, encodeWav, matchMusic, toGray, frameMotion, movementGrid } from "./beats.js";
 import { colorHistogram, groupFaces, followFace, tileRegions, mergeDetections } from "./faces.js";
 import { chunksToLyrics } from "./lyrics.js";
+import { brollPlan, singingStretches } from "./broll.js";
 import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
   SAMPLE_STEP,
@@ -1122,6 +1123,8 @@ els.go.addEventListener("click", async () => {
 
     const sound = await prepareSound(startT, duration);
     if (sound.music) usedFiles.push(sound.music.name);
+    const broll = await planBroll(startT, duration, sound);
+    for (const name of new Set(broll.map((b) => b.name))) usedFiles.push(name);
 
     const { args, textFiles } = buildCommand({
       inputName,
@@ -1140,6 +1143,7 @@ els.go.addEventListener("click", async () => {
       // Everything about the music except its bytes (which are written to a file separately).
       music: sound.music && (({ bytes, ...rest }) => rest)(sound.music),
       closeups: sound.closeups,
+      broll,
       transition: els.transition.value,
       beats: sound.beats || [],
       downbeats: sound.downbeats || [],
@@ -1161,6 +1165,10 @@ els.go.addEventListener("click", async () => {
       }
       // A copy each time: writeFile hands the buffer over, and a retry would need it again.
       if (sound.music) await ffmpeg.writeFile(sound.music.name, sound.music.bytes.slice());
+      for (const name of new Set(broll.map((b) => b.name))) {
+        const item = broll.find((b) => b.name === name).item;
+        await ffmpeg.writeFile(name, new Uint8Array(await item.file.arrayBuffer()));
+      }
       for (const f of textFiles) await ffmpeg.writeFile(f.name, new TextEncoder().encode(f.text));
 
       startEncodingTimer();
@@ -1197,6 +1205,7 @@ els.go.addEventListener("click", async () => {
     const notes = [];
     if (bad.length) notes.push(`${bad.length} lyric line(s) were skipped.`);
     notes.push(...sound.notes);
+    if (broll.length) notes.push(`Added ${broll.length} b-roll shot${broll.length === 1 ? "" : "s"} at ${broll.map((b) => formatTime(b.at)).join(", ")}.`);
     setStatus(`Done! Preview below, then download and upload to Instagram. ${notes.join(" ")}`.trim());
     els.output.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
@@ -1345,3 +1354,125 @@ lyricsEls.button.addEventListener("click", async () => {
     lyricsEls.button.disabled = false;
   }
 });
+
+// ---- B-roll ----
+const MAX_BROLL = 8;
+const brollEls = {
+  input: document.getElementById("brollFiles"),
+  list: document.getElementById("brollList"),
+  options: document.getElementById("brollOptions"),
+  every: document.getElementById("brollEvery"),
+  note: document.getElementById("brollNote"),
+};
+let brollItems = []; // [{ file, url, image, duration }]
+
+// A video file's length, from its metadata (10 s if it can't be read quickly).
+function clipDuration(url) {
+  return new Promise((resolve) => {
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.muted = true;
+    const done = (d) => {
+      v.removeAttribute("src");
+      v.load();
+      resolve(d);
+    };
+    const timer = setTimeout(() => done(10), 5000);
+    v.onloadedmetadata = () => {
+      clearTimeout(timer);
+      done(Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 10);
+    };
+    v.onerror = () => {
+      clearTimeout(timer);
+      done(10);
+    };
+    v.src = url;
+  });
+}
+
+function renderBroll() {
+  brollEls.list.textContent = "";
+  brollItems.forEach((item, i) => {
+    const row = document.createElement("div");
+    row.className = "broll-item";
+    const thumb = document.createElement(item.image ? "img" : "video");
+    if (item.image) {
+      thumb.alt = "";
+      thumb.src = item.url;
+    } else {
+      thumb.muted = true;
+      thumb.playsInline = true;
+      thumb.preload = "metadata";
+      thumb.src = `${item.url}#t=${Math.min(1, item.duration / 2).toFixed(1)}`;
+    }
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const name = document.createElement("span");
+    name.textContent = item.file.name;
+    const info = document.createElement("small");
+    info.textContent = item.image ? "Photo" : `Clip, ${formatTime(item.duration)}`;
+    meta.append(name, info);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button small secondary";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      URL.revokeObjectURL(item.url);
+      brollItems.splice(i, 1);
+      renderBroll();
+    });
+    row.append(thumb, meta, remove);
+    brollEls.list.append(row);
+  });
+  brollEls.options.hidden = brollItems.length === 0;
+}
+
+brollEls.input.addEventListener("change", async () => {
+  const files = [...brollEls.input.files];
+  brollEls.input.value = ""; // so the same file can be picked again later
+  for (const file of files) {
+    if (brollItems.length >= MAX_BROLL) {
+      brollEls.note.textContent = `Up to ${MAX_BROLL} b-roll clips and photos.`;
+      break;
+    }
+    const url = URL.createObjectURL(file);
+    const image = file.type.startsWith("image/");
+    const duration = image ? Infinity : await clipDuration(url);
+    brollItems.push({ file, url, image, duration });
+    dlog("info", `B-roll added: ${file.name} (${image ? "photo" : `${duration.toFixed(1)} s`}, ${(file.size / 1048576).toFixed(1)} MB)`);
+  }
+  renderBroll();
+});
+
+// Where the b-roll shots go in this reel: [{ name, at, len, offset, image, item }].
+async function planBroll(startT, duration, sound) {
+  if (!brollItems.length) return [];
+  // Least-singing moments come from the sound analysis (if it ran); bar lines from the beat.
+  let singing = [];
+  if (analysis && analysis.file === inputFile) {
+    singing = singingStretches(analysis.windows, singingFlags(analysis.windows), startT, duration);
+  }
+  let downbeats = sound.downbeats || [];
+  if (!downbeats.length) {
+    try {
+      const clip = await performanceSlice(startT, duration);
+      const grid = beatGrid(clip.mono, clip.sampleRate);
+      if (grid.confidence >= MIN_BEAT) downbeats = grid.downbeats;
+    } catch {
+      // no beat: the shots just won't be on bar lines
+    }
+  }
+  const plan = brollPlan({
+    duration,
+    clips: brollItems.map((b) => ({ duration: b.duration })),
+    singing,
+    downbeats,
+    every: Number(brollEls.every.value),
+  });
+  dlog("info", `B-roll plan: ${plan.map((p) => `${brollItems[p.clip].file.name} at ${p.at.toFixed(1)} s (from ${p.offset.toFixed(1)} s)`).join(", ") || "none (reel too short)"}`);
+  return plan.map((p) => {
+    const item = brollItems[p.clip];
+    const ext = (item.file.name.split(".").pop() || (item.image ? "jpg" : "mp4")).toLowerCase().replace(/[^a-z0-9]/g, "") || "mp4";
+    return { name: `broll${p.clip}.${ext}`, at: p.at, len: p.len, offset: p.offset, image: item.image, item };
+  });
+}

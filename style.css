@@ -652,3 +652,34 @@ progress::-moz-progress-bar { background: var(--gradient); border-radius: 999px;
 .lyrics-gen .help { margin: 10px 0 0; }
 
 .spinner.dark { border-color: color-mix(in srgb, var(--accent) 30%, transparent); border-top-color: var(--accent); }
+
+/* ---- B-roll list ---------------------------------------------------------------------------- */
+.broll-list { display: grid; gap: 8px; margin: 0 0 14px; }
+
+.broll-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.broll-item img, .broll-item video {
+  width: 44px;
+  height: 56px;
+  margin: 0;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #000;
+  flex: none;
+}
+
+.broll-item .meta { flex: 1; min-width: 0; font-size: 0.88rem; font-weight: 600; }
+
+.broll-item .meta span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.broll-item .meta small { font-weight: 400; }
+
+.broll-item button { padding: 6px 10px; font-size: 0.82rem; }
