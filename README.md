@@ -30,6 +30,16 @@ Then open http://localhost:8000.
 3. Under **Build and deployment**, choose **Deploy from a branch**, select `main` and `/ (root)`, then save.
 4. Open the address GitHub shows, on your phone or computer.
 
+## Tests
+
+The editing logic in `editor.js` has tests that run with Node 18 or newer:
+
+```bash
+npm test
+```
+
+If a native `ffmpeg` is installed, one extra test renders a short reel with the real command and checks the output size and audio rate. Without ffmpeg that test is skipped.
+
 ## Lyrics format
 
 One line per lyric, starting with the time in the original video:
@@ -42,6 +52,8 @@ One line per lyric, starting with the time in the original video:
 
 Times are measured from the start of the original video, not from the trimmed clip.
 
+Long lines wrap onto two lines automatically, and shrink a little if they still don't fit. The song title wraps the same way.
+
 ## Limits and notes
 
 - **Language:** captions use the bundled Poppins font, which covers the Latin alphabet. Hindi and other scripts need a font file that includes them, placed in `fonts/` and named in `app.js`. Romanized lyrics work now.
@@ -49,7 +61,7 @@ Times are measured from the start of the original video, not from the trimmed cl
 - **Speed:** processing takes a while on phones, and long clips can run out of memory. Keep reels to about 30–60 seconds.
 - **Any orientation:** landscape, square, portrait, and tall phone videos are all accepted. Wider sources crop sideways and taller ones crop up and down, and face tracking follows the singer on that axis.
 - **Audio required:** videos with no audio track will fail at the audio step.
-- **Untested in a browser:** the ffmpeg commands were tested natively, and the caption, crop, and fade logic were tested with the same generator. The in-browser pieces (face detection and the ffmpeg.wasm build) have not been run in a real browser yet, so bug reports are welcome.
+- **Untested in a browser:** the ffmpeg commands were tested natively, and the caption, crop, and fade logic are covered by `npm test`, which runs the generated command through a native ffmpeg. The in-browser pieces (face detection and the ffmpeg.wasm build) have not been run in a real browser yet, so bug reports are welcome.
 - **Music rights:** covers of copyrighted songs can be muted or taken down on Instagram. Use Instagram's licensed music, original arrangements, or royalty-free tracks for the audio.
 
 ## Files
@@ -59,3 +71,4 @@ Times are measured from the start of the original video, not from the trimmed cl
 - `editor.js`: pure editing logic (crop path, captions, ffmpeg command). No browser code, so it can be tested separately.
 - `app.js`: browser glue: file input, face tracking, the ffmpeg engine, and the download.
 - `fonts/Poppins-Bold.ttf`: caption font (SIL Open Font License).
+- `test/`: tests for `editor.js`.

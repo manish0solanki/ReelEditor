@@ -104,19 +104,120 @@ function smooth(values, radius = 2) {
   });
 }
 
-// Text for ffmpeg's sendcmd filter: "time crop x value;" (or "crop y") per line.
+// Text for ffmpeg's sendcmd filter. At each key the crop offset becomes an expression of time that
+// moves in a straight line to the next key, so the crop glides instead of jumping every sample.
+// The last key holds still. Expressions avoid commas and spaces, which sendcmd treats as separators.
 export function trackFileText(keys, axis) {
   const param = axis === "y" ? "y" : "x";
-  return keys.map((k) => `${k.t.toFixed(2)} crop ${param} ${k.x};`).join("\n") + "\n";
+  return (
+    keys
+      .map((k, i) => {
+        const next = keys[i + 1];
+        const t0 = k.t.toFixed(2);
+        if (!next || next.x === k.x || next.t <= k.t) return `${t0} crop ${param} ${k.x};`;
+        const span = (next.t - k.t).toFixed(2);
+        return `${t0} crop ${param} ${k.x}+(${next.x - k.x})*(t-${t0})/${span};`;
+      })
+      .join("\n") + "\n"
+  );
 }
 
+// ---- Text layout -------------------------------------------------------------------------------
+// ffmpeg's drawtext never wraps, so lines are measured and broken here. Widths are estimates for
+// Poppins Bold in ems (measured with ffmpeg), slightly generous so text never touches the edge.
+
+export const FRAME_W = 1080;
+export const FRAME_H = 1920;
+const TEXT_MARGIN = 70; // px kept clear on each side
+const BORDER = 5;
+
+const NARROW = new Set("iIjlt.,:;'!|`()[]{}");
+const SEMI = new Set("frJ\"-1/");
+const WIDE = new Set("mwMW@%");
+
+function charEm(ch) {
+  if (ch === " ") return 0.26;
+  if (NARROW.has(ch)) return 0.32;
+  if (SEMI.has(ch)) return 0.45;
+  if (WIDE.has(ch)) return 1.05;
+  if (ch >= "A" && ch <= "Z") return 0.74;
+  if (ch >= "0" && ch <= "9") return 0.64;
+  return 0.62;
+}
+
+export function textWidth(text, size) {
+  let em = 0;
+  for (const ch of text) em += charEm(ch);
+  return em * size + 2 * BORDER;
+}
+
+// Greedy word wrap to maxWidth pixels. A single word too long for a line is split by characters.
+export function wrapText(text, size, maxWidth = FRAME_W - 2 * TEXT_MARGIN) {
+  const words = String(text).trim().split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  const pushWord = (word) => {
+    if (textWidth(word, size) <= maxWidth) return word;
+    // Hard-split a word that can't fit on its own.
+    let chunk = "";
+    for (const ch of word) {
+      if (chunk && textWidth(chunk + ch, size) > maxWidth) {
+        lines.push(chunk);
+        chunk = ch;
+      } else chunk += ch;
+    }
+    return chunk;
+  };
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (textWidth(candidate, size) <= maxWidth) line = candidate;
+    else {
+      if (line) lines.push(line);
+      line = pushWord(word);
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// Picks the largest font size (stepping down from `size`) at which the text fits in maxLines lines.
+// Below minSize it stops shrinking and allows extra lines instead.
+export function fitText(text, { size, minSize, maxLines }) {
+  for (let s = size; s >= minSize; s -= 4) {
+    const lines = wrapText(text, s);
+    if (lines.length <= maxLines) return { size: s, lines };
+  }
+  return { size: minSize, lines: wrapText(text, minSize) };
+}
+
+// Lines are drawn one drawtext each so every line is centered on its own.
+// expansion=none stops ffmpeg from treating "%" in lyrics as a format code (which blanks the text).
 function drawText({ textFile, size, y, a, b }) {
   return (
-    `drawtext=fontfile=${FONT_FILE}:textfile=${textFile}:fontsize=${size}` +
-    `:fontcolor=white:borderw=5:bordercolor=black:x=(w-text_w)/2:y=${y}` +
+    `drawtext=fontfile=${FONT_FILE}:textfile=${textFile}:expansion=none:fontsize=${size}` +
+    `:fontcolor=white:borderw=${BORDER}:bordercolor=black:x=(w-text_w)/2:y=${y}` +
     `:enable='between(t,${a.toFixed(2)},${b.toFixed(2)})'`
   );
 }
+
+// Adds one text block (title or caption) as drawtext filters plus the text files they read.
+// anchor "top": first line starts at y. anchor "bottom": last line ends at y.
+function addTextBlock({ v, textFiles, prefix, text, fit, y, anchor, a, b }) {
+  const { size, lines } = fitText(text, fit);
+  const lineH = Math.round(size * 1.3);
+  const top = anchor === "bottom" ? Math.round(y - lines.length * lineH) : Math.round(y);
+  lines.forEach((line, i) => {
+    const name = lines.length === 1 ? `${prefix}.txt` : `${prefix}_${i}.txt`;
+    textFiles.push({ name, text: line });
+    v.push(drawText({ textFile: name, size, y: top + i * lineH, a, b }));
+  });
+}
+
+export const TITLE_FIT = { size: 80, minSize: 56, maxLines: 2 };
+export const CAPTION_FIT = { size: 60, minSize: 44, maxLines: 2 };
+const TITLE_TOP = Math.round(FRAME_H * 0.12);
+// Bottom of the caption block. A single 60px line lands where it always did (top at 74% of height).
+const CAPTION_BOTTOM = Math.round(FRAME_H * 0.74 + 60 * 1.3);
 
 // Builds the full ffmpeg argument list plus the text files it needs written into its file system.
 export function buildCommand({
@@ -142,7 +243,7 @@ export function buildCommand({
         : `crop=w=${cropW}:h=${cropH}:x=0:y=${staticOffset}`
     );
   }
-  v.push("scale=1080:1920");
+  v.push(`scale=${FRAME_W}:${FRAME_H}`);
 
   if (grade) {
     v.push("eq=contrast=1.08:saturation=1.12:brightness=0.02");
@@ -150,14 +251,17 @@ export function buildCommand({
   }
 
   if (title) {
-    textFiles.push({ name: "title.txt", text: title });
-    v.push(drawText({ textFile: "title.txt", size: 80, y: "h*0.12", a: 0, b: Math.min(3.5, duration) }));
+    addTextBlock({
+      v, textFiles, prefix: "title", text: title, fit: TITLE_FIT,
+      y: TITLE_TOP, anchor: "top", a: 0, b: Math.min(3.5, duration),
+    });
   }
 
   captions.forEach((c, i) => {
-    const name = `caption${i}.txt`;
-    textFiles.push({ name, text: c.text });
-    v.push(drawText({ textFile: name, size: 60, y: "h*0.74", a: c.a, b: c.b }));
+    addTextBlock({
+      v, textFiles, prefix: `caption${i}`, text: c.text, fit: CAPTION_FIT,
+      y: CAPTION_BOTTOM, anchor: "bottom", a: c.a, b: c.b,
+    });
   });
 
   const fadeOutAt = (duration - 1).toFixed(2);
@@ -180,6 +284,8 @@ export function buildCommand({
     "-crf", "23",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
+    // loudnorm works at 192 kHz internally; without this the reel's audio comes out at 96 kHz.
+    "-ar", "48000",
     "-b:a", "160k",
     "-movflags", "+faststart",
     "output.mp4",

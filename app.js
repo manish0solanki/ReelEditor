@@ -234,7 +234,7 @@ els.go.addEventListener("click", async () => {
     if (keys) await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys, geometry.axis)));
     for (const f of textFiles) {
       usedFiles.push(f.name);
-      await ffmpeg.writeFile(f.name, new TextEncoder().encode(f.text + "\n"));
+      await ffmpeg.writeFile(f.name, new TextEncoder().encode(f.text));
     }
 
     const exitCode = await ffmpeg.exec(args);
