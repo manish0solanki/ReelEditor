@@ -293,3 +293,93 @@ export function buildCommand({
 
   return { args, textFiles };
 }
+
+// ---- Finding the song --------------------------------------------------------------------------
+// The browser runs Google's YAMNet sound classifier over the audio in ~1 second windows. These
+// functions turn its scores into a trim: start a little before the singing, end when the music does.
+//
+// In a full mix YAMNet's singing scores are small (often 0.01-0.05) because "Music" dominates, but
+// instrumental passages score essentially 0, so the threshold is relative to the loudest vocals in
+// the clip. Speech is excluded by requiring music to outweigh speech.
+
+export const VOCAL_LABELS = [
+  "Singing", "Male singing", "Female singing", "Child singing", "Synthetic singing", "Choir",
+  "Vocal music", "A capella", "Humming", "Rapping", "Chant", "Mantra", "Yodeling",
+];
+export const AUDIO_LABELS = [...VOCAL_LABELS, "Speech", "Music", "Applause", "Cheering", "Crowd", "Silence"];
+
+// { categoryName: score } for one window -> the four numbers the trim logic uses.
+export function summarizeScores(scores) {
+  const get = (k) => scores[k] || 0;
+  return {
+    vocal: VOCAL_LABELS.reduce((sum, k) => sum + get(k), 0),
+    speech: get("Speech"),
+    music: get("Music"),
+    crowd: get("Applause") + get("Cheering") + get("Crowd"),
+  };
+}
+
+const MIN_VOCAL = 0.008; // below this a window never counts as singing
+const VOCAL_FRACTION = 0.1; // ...and it must reach this share of the clip's typical strong vocals
+const MUSIC_MIN = 0.3; // a window counts as music (for the outro) above this
+
+// windows: [{ t, vocal, speech, music, crowd }] in time order, t = window start in seconds.
+// Returns { start, end, singStart, songEnd, found } where found is "singing", "music" or null.
+export function findSongBounds(windows, duration, { leadIn = 2, tail = 0.5 } = {}) {
+  const none = { start: 0, end: duration, singStart: null, songEnd: null, found: null };
+  if (!windows.length) return none;
+  const hop = windows.length > 1 ? windows[1].t - windows[0].t : 0.975;
+
+  // "Typical strong vocals" = 90th percentile of windows with any vocal score at all. Using the
+  // single loudest window instead lets one spike raise the bar above the quieter opening lines.
+  const voiced = windows.map((w) => w.vocal).filter((v) => v >= 0.004).sort((a, b) => a - b);
+  const strong = voiced.length ? voiced[Math.floor(0.9 * (voiced.length - 1))] : 0;
+  const vocalThr = Math.max(MIN_VOCAL, VOCAL_FRACTION * strong);
+  const sings = windows.map((w) => w.vocal >= vocalThr && w.music + w.vocal > w.speech);
+  const musical = windows.map(
+    (w, i) => sings[i] || (w.music >= MUSIC_MIN && w.music > w.speech && w.music > w.crowd)
+  );
+
+  // Sustained: the window and at least one more within the next (or previous) 3 windows.
+  const sustained = (i, dir) => {
+    for (let k = 1; k <= 3; k++) if (sings[i + dir * k]) return true;
+    return false;
+  };
+
+  let first = sings.findIndex((s, i) => s && sustained(i, +1));
+  let last = -1;
+  for (let i = sings.length - 1; i >= 0; i--) if (sings[i] && sustained(i, -1)) { last = i; break; }
+  let found = "singing";
+
+  if (first < 0) {
+    // No clear singing (an instrumental, or vocals the classifier can't hear): trim to the music.
+    first = musical.findIndex((m, i) => m && musical[i + 1]);
+    last = -1;
+    for (let i = musical.length - 1; i > 0; i--) if (musical[i] && musical[i - 1]) { last = i; break; }
+    if (first < 0 || last < first) return none;
+    found = "music";
+  }
+
+  // Carry on past the last singing through the outro while it's still music (bridging 1-window gaps).
+  let endIdx = last;
+  for (let i = last + 1; i < windows.length; i++) {
+    if (musical[i]) endIdx = i;
+    else if (!musical[i + 1]) break;
+  }
+
+  const singStart = windows[first].t;
+  const songEnd = Math.min(duration, windows[endIdx].t + hop);
+  const start = Math.max(0, singStart - (found === "singing" ? leadIn : 0.5));
+  const end = Math.min(duration, songEnd + tail);
+  const round = (v) => Math.round(v * 10) / 10;
+  return { start: round(start), end: round(end), singStart: round(singStart), songEnd: round(songEnd), found };
+}
+
+// 83.4 -> "1:23.4"
+export function formatTime(seconds) {
+  const tenths = Math.round(seconds * 10);
+  const m = Math.floor(tenths / 600);
+  const s = (tenths - m * 600) / 10;
+  const text = s.toFixed(1).replace(/\.0$/, "");
+  return `${m}:${s < 10 ? "0" : ""}${text}`;
+}
