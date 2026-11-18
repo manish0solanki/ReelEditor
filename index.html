@@ -88,8 +88,15 @@
         <input id="musicFile" type="file" accept="audio/*" />
       </label>
       <div id="matchRow" hidden>
-        <label class="check"><input id="matchMusic" type="checkbox" checked /> Match the music to the video's beat, so steps and moves land on it</label>
-        <small>Speeds the music up or down a little (at most 10%, without changing its pitch) and starts it where its bars line up with the video's. Works when the people in the video move to a beat you can hear in the original sound.</small>
+        <label>Match the music to
+          <select id="matchSource">
+            <option value="auto" selected>Automatic: the beat in the video's sound, or else the movement</option>
+            <option value="sound">The beat in the video's sound</option>
+            <option value="movement">The people's movement (steps, claps, moves)</option>
+            <option value="off">Don't match: play the music as it is</option>
+          </select>
+        </label>
+        <small>Speeds the music up or down a little (at most 10%, without changing its pitch) and starts it where its bars line up with the video's, so steps and moves land on the music's beats. Reading the movement plays the clip silently at double speed first, so it takes about half the clip's length.</small>
       </div>
       <label class="slider" id="musicVolRow" hidden>
         <span class="slider-title">Music volume: <span id="musicVolLabel">35</span>%</span>
@@ -98,7 +105,7 @@
       </label>
 
       <label class="check"><input id="beatCuts" type="checkbox" /> Cut to the beat: switch between a wide shot and a close-up of the singer on the music's bars</label>
-      <small>The beat comes from your music file if you add one, otherwise from your performance.</small>
+      <small>The beat comes from your music file if you add one, otherwise from your performance's sound, or its movement if the sound has no clear beat.</small>
     </section>
 
     <section class="card">

@@ -99,3 +99,60 @@ test("encodeWav writes a valid 16-bit mono WAV", () => {
   assert.equal(v.getUint32(40, true), 12);
   assert.deepEqual([1, 2, 3, 4, 5].map((i) => v.getInt16(44 + i * 2, true)), [16384, -16383, 32767, -32767, 32767]);
 });
+
+import { toGray, frameMotion, movementGrid } from "../beats.js";
+
+test("toGray and frameMotion: movement counts, an overall brightness change doesn't", () => {
+  const rgba = new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]);
+  const g = toGray(rgba);
+  assert.deepEqual(Array.from(g, (v) => Math.round(v)), [76, 150, 29, 255]);
+  const a = new Float32Array([10, 10, 200, 200]);
+  assert.equal(frameMotion(a, a), 0);
+  assert.equal(frameMotion(a, new Float32Array([40, 40, 230, 230])), 0); // lights up evenly
+  assert.equal(frameMotion(a, new Float32Array([200, 200, 10, 10])), 190); // something moved
+});
+
+// Motion samples at an uneven ~30 fps: bursts on each beat (beat 1 of the bar stronger) over swaying.
+function moving({ bpm, seconds = 20, offset = 0.37, seed = 3 }) {
+  let r = seed;
+  const rnd = () => (r = (r * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const out = [];
+  for (let t = 0; t < seconds; t += 1 / 30 + (rnd() - 0.5) * 0.01) {
+    let m = 2 + 1.5 * Math.sin(t * 0.7) + rnd() * 1.5;
+    if (bpm) {
+      const p = 60 / bpm;
+      const ph = (((t - offset) % p) + p) % p;
+      m += 12 * Math.exp(-((ph / 0.04) ** 2)) * (Math.round((t - offset) / p) % 4 === 0 ? 1.5 : 1);
+    } else if (rnd() < 0.05) m += 10 * rnd();
+    out.push({ t, motion: m });
+  }
+  return out;
+}
+
+for (const bpm of [90, 100, 128]) {
+  test(`movementGrid: steps at ${bpm} BPM give that tempo and beats within 35 ms`, () => {
+    const g = movementGrid(moving({ bpm }), 20);
+    assert.ok(Math.abs(g.bpm - bpm) <= 1.5, `bpm ${g.bpm}`);
+    assert.ok(g.confidence > 0.5, String(g.confidence));
+    const p = 60 / bpm;
+    for (const b of g.beats.filter((x) => x > 0.5 && x < 19.5)) {
+      const k = Math.round((b - 0.37) / p);
+      assert.ok(Math.abs(b - (0.37 + k * p)) < 0.035, `beat ${b}`);
+    }
+  });
+}
+
+test("movementGrid: random fidgeting has no confidence; too little data gives nothing", () => {
+  for (const seed of [1, 2, 3, 4, 5]) assert.ok(movementGrid(moving({ bpm: 0, seed }), 20).confidence < 0.15, `seed ${seed}`);
+  assert.equal(movementGrid([{ t: 0, motion: 1 }], 20).beats.length, 0);
+});
+
+test("matchMusic works the same with a beat from movement", async () => {
+  const { matchMusic } = await import("../beats.js");
+  const video = movementGrid(moving({ bpm: 100 }), 20);
+  const music = movementGrid(moving({ bpm: 94, seconds: 60, offset: 1.1, seed: 9 }), 60);
+  const m = matchMusic(video, music, 20);
+  assert.ok(m.ok, m.reason);
+  assert.ok(Math.abs(m.tempo - 100 / 94) < 0.02, String(m.tempo));
+  assert.ok(m.fraction > 0.8, String(m.fraction));
+});

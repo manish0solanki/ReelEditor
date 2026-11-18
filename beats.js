@@ -353,3 +353,74 @@ export function matchMusic(video, music, duration, { minConfidence = 0.15 } = {}
     confidence: music.confidence,
   };
 }
+
+// ---- Beats from movement -----------------------------------------------------------------------
+// When the video's sound has no clear beat (dancing in silence, talk over the top), the beat can come
+// from the picture: steps, claps and arm hits are bursts of change between frames. The app grabs
+// frames as tiny greyscale thumbnails with their exact times; these functions turn that into the same
+// kind of beat grid as the sound gives, so tempo, bars, matching and cuts all work the same way.
+
+// RGBA pixels -> greyscale (0-255) Float32Array.
+export function toGray(rgba) {
+  const g = new Float32Array(rgba.length / 4);
+  for (let i = 0; i < g.length; i++) g[i] = 0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2];
+  return g;
+}
+
+// How much the picture changed between two greyscale thumbnails: mean absolute difference, minus the
+// part explained by an overall brightness change (lights, auto-exposure), so only movement counts.
+export function frameMotion(prev, cur) {
+  let meanDiff = 0;
+  for (let i = 0; i < cur.length; i++) meanDiff += cur[i] - prev[i];
+  meanDiff /= cur.length;
+  let m = 0;
+  for (let i = 0; i < cur.length; i++) m += Math.abs(cur[i] - prev[i] - meanDiff);
+  return m / cur.length;
+}
+
+const MOTION_HOP = 0.02; // seconds per envelope step
+
+// samples: [{ t, motion }] in time order (irregular times are fine), t from the reel start.
+// Returns a beat grid like beatGrid(): { bpm, beats, downbeats, phase, confidence }.
+export function movementGrid(samples, duration) {
+  const none = { bpm: 0, beats: [], downbeats: [], phase: 0, confidence: 0 };
+  if (samples.length < 20 || duration < 3) return none;
+  // Resample onto an even time grid (linear between samples).
+  const n = Math.floor(duration / MOTION_HOP);
+  const raw = new Float64Array(n);
+  let j = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i * MOTION_HOP;
+    while (j + 1 < samples.length && samples[j + 1].t <= t) j++;
+    const a = samples[j];
+    const b = samples[Math.min(j + 1, samples.length - 1)];
+    raw[i] = b.t > a.t ? a.motion + ((b.motion - a.motion) * Math.min(1, Math.max(0, t - a.t))) / (b.t - a.t) : a.motion;
+  }
+  // Like the sound's onsets: rises in movement above the recent average (so steady swaying or camera
+  // shake doesn't count), normalised.
+  const w = Math.round(1 / MOTION_HOP);
+  const env = new Float64Array(n);
+  let sum = 0;
+  let max = 1e-9;
+  for (let i = 0; i < n; i++) {
+    sum += raw[i];
+    if (i >= w) sum -= raw[i - w];
+    const rise = i > 0 ? raw[i] - raw[i - 1] : 0;
+    env[i] = Math.max(0, raw[i] - sum / Math.min(i + 1, w)) + Math.max(0, rise);
+    if (env[i] > max) max = env[i];
+  }
+  for (let i = 0; i < n; i++) env[i] /= max;
+
+  const { bpm, strength } = estimateTempo(env, MOTION_HOP);
+  const beats = trackBeats(env, MOTION_HOP, bpm).filter((b) => b < duration);
+  const phase = downbeatPhase(beats, env, MOTION_HOP);
+  return {
+    bpm,
+    beats,
+    downbeats: beats.filter((_, i) => i % 4 === phase),
+    phase,
+    // Movement is noisier than sound: random fidgeting scored 1.3-1.35 in tests and rhythmic steps
+    // 2.5 or more, so the scale starts higher than for sound (where ~1 means no pulse).
+    confidence: Math.max(0, Math.min(1, (strength - 1.5) / 1.0)),
+  };
+}

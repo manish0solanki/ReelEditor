@@ -3,7 +3,7 @@
 import { FFmpeg } from "./vendor/ffmpeg/index.js";
 import { dlog, openPanel } from "./debug.js";
 import { audioFeatures, repetitionCurve, findBestMoments } from "./moments.js";
-import { beatGrid, cutPlan, synthDrums, encodeWav, matchMusic } from "./beats.js";
+import { beatGrid, cutPlan, synthDrums, encodeWav, matchMusic, toGray, frameMotion, movementGrid } from "./beats.js";
 import { colorHistogram, groupFaces, followFace, tileRegions, mergeDetections } from "./faces.js";
 import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
@@ -97,7 +97,7 @@ const els = {
   voiceVolLabel: $("voiceVolLabel"),
   voiceVolRow: $("voiceVolRow"),
   beatCuts: $("beatCuts"),
-  matchMusic: $("matchMusic"),
+  matchSource: $("matchSource"),
   matchRow: $("matchRow"),
   go: $("go"),
   output: $("output"),
@@ -775,6 +775,93 @@ els.lyrics.addEventListener("input", () => {
     : "";
 });
 
+// ---- Beats from movement ----
+// Plays the reel's stretch silently at 2x speed and measures how much each frame changed from the one
+// before (on a 64-pixel-wide greyscale thumbnail), with each frame's exact time in the video. Steps,
+// claps and arm hits are bursts of change. Without requestVideoFrameCallback it steps through instead.
+const MOTION_W = 64;
+
+async function captureMotion(video, startT, duration) {
+  const W = MOTION_W;
+  const H = Math.max(8, Math.round((MOTION_W * video.videoHeight) / video.videoWidth));
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const samples = [];
+  let prev = null;
+  let prevT = 0;
+  const grab = (t) => {
+    ctx.drawImage(video, 0, 0, W, H);
+    const cur = toGray(ctx.getImageData(0, 0, W, H).data);
+    // The change happened somewhere between the two frames: credit it to the midpoint, not the later
+    // frame (which made the beat land ~45 ms late in a test).
+    if (prev) samples.push({ t: (prevT + t) / 2, motion: frameMotion(prev, cur) });
+    prev = cur;
+    prevT = t;
+  };
+  const progress = (t) => setStatus(`Watching the movement for the beat… ${Math.min(99, Math.round((100 * t) / duration))}%`);
+
+  const saved = { muted: video.muted, rate: video.playbackRate, time: video.currentTime };
+  video.pause();
+  await seekTo(video, startT);
+  try {
+    if (video.requestVideoFrameCallback) {
+      video.muted = true;
+      video.playbackRate = 2;
+      await new Promise((resolve, reject) => {
+        let lastProgress = 0;
+        const stop = setTimeout(resolve, (duration / 2 + 15) * 1000); // never wait forever
+        const onFrame = (_, meta) => {
+          const t = meta.mediaTime - startT;
+          if (t >= 0) grab(t);
+          if (t - lastProgress >= 1) {
+            progress(t);
+            lastProgress = t;
+          }
+          if (t >= duration || video.ended) {
+            clearTimeout(stop);
+            resolve();
+          } else video.requestVideoFrameCallback(onFrame);
+        };
+        video.requestVideoFrameCallback(onFrame);
+        video.play().catch((err) => {
+          clearTimeout(stop);
+          reject(err);
+        });
+      });
+    } else {
+      // Fallback: step through at 12 frames a second.
+      for (let t = 0; t < duration; t += 1 / 12) {
+        await seekTo(video, startT + t);
+        grab(t);
+        if (Math.round(t * 12) % 24 === 0) progress(t);
+      }
+    }
+  } finally {
+    video.pause();
+    video.muted = saved.muted;
+    video.playbackRate = saved.rate;
+    await seekTo(video, saved.time);
+  }
+  dlog("info", `Movement: ${samples.length} frames over ${duration.toFixed(1)} s (${(samples.length / duration).toFixed(0)} per second of video)`);
+  return samples;
+}
+
+const MIN_BEAT = 0.15; // beat-grid confidence needed to follow a beat
+
+// The beat of the reel's stretch, from its sound or from the people's movement.
+// source: "sound", "movement" or "auto" (the sound's if it's clear, otherwise the movement's).
+async function reelBeat(source, clip, startT, duration) {
+  const sound = beatGrid(clip.mono, clip.sampleRate);
+  dlog("info", `Beat in the sound: ${sound.bpm} BPM, confidence ${sound.confidence.toFixed(2)}`);
+  if (source === "sound" || (source === "auto" && sound.confidence >= MIN_BEAT)) return { grid: sound, from: "sound" };
+  const moves = movementGrid(await captureMotion(els.preview, startT, duration), duration);
+  dlog("info", `Beat in the movement: ${moves.bpm} BPM, ${moves.beats.length} beats, confidence ${moves.confidence.toFixed(2)}`);
+  if (source === "movement" || moves.confidence >= MIN_BEAT) return { grid: moves, from: "movement" };
+  return { grid: sound, from: "sound" };
+}
+
 // ---- Sound and music ----
 const SOUND_KEY = "reelmaker.sound";
 let musicBeatCache = null; // { file, mono, sampleRate } of the chosen music file
@@ -816,16 +903,18 @@ async function prepareSound(startT, duration) {
   let grid = null;
   let matched = null;
   if (music === "file" || cuts || music === "beat") {
-    if (music === "file" && els.matchMusic.checked) {
-      // Match the music to the video's own beat: speed it up or down and line up the bars.
+    if (music === "file" && els.matchSource.value !== "off") {
+      // Match the music to the video's own beat (from its sound or the people's movement): speed it
+      // up or down and line up the bars.
       const file = els.musicFile.files[0];
       if (!file) throw new Error("Choose a music file, or set Background music to None");
       if (!musicBeatCache || musicBeatCache.file !== file) musicBeatCache = { file, ...(await decodeMono(file)) };
       const { mono, sampleRate } = musicBeatCache;
-      const videoGrid = beatGrid(clip.mono, clip.sampleRate);
+      const { grid: videoGrid, from } = await reelBeat(els.matchSource.value, clip, startT, duration);
       // The music's beat over its first 6 minutes (enough to find a good starting point).
       const musicGrid = beatGrid(mono.subarray(0, Math.min(mono.length, 360 * sampleRate)), sampleRate);
       matched = matchMusic(videoGrid, musicGrid, duration);
+      matched.from = from;
       dlog(
         "info",
         `Music match: video ${videoGrid.bpm} BPM (confidence ${videoGrid.confidence.toFixed(2)}), music ${musicGrid.bpm} BPM ` +
@@ -837,13 +926,14 @@ async function prepareSound(startT, duration) {
       if (matched.ok) {
         const pct = (matched.tempo - 1) * 100;
         result.notes.push(
-          `Music matched to the video's beat: ${matched.musicBpm} → ${matched.videoBpm} BPM` +
+          `Music matched to the ${from === "movement" ? "people's movement" : "video's beat"}: ${matched.musicBpm} → ${matched.videoBpm} BPM` +
             ` (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}% speed), starting ${formatTime(matched.start * matched.tempo)} into the song,` +
             ` ${Math.round(matched.fraction * 100)}% of beats line up.`
         );
         grid = matched;
       } else {
-        result.notes.push(`Couldn't match the music to the video: ${matched.reason}. It plays from the start at its own speed.`);
+        const why = from === "movement" ? matched.reason.replace("the video's sound", "the movement") : matched.reason;
+        result.notes.push(`Couldn't match the music to the video: ${why}. It plays from the start at its own speed.`);
         grid = beatGrid(mono.subarray(0, Math.round(duration * sampleRate)), sampleRate);
       }
     } else if (music === "file") {
@@ -864,19 +954,23 @@ async function prepareSound(startT, duration) {
         grid = { ...grid, beats: extend(one), downbeats: extend(grid.downbeats.filter((b) => b < musicLength)) };
       }
     } else {
-      grid = beatGrid(clip.mono, clip.sampleRate);
+      // The generated beat and the cuts follow the performance: its sound, or its movement if the
+      // sound has no clear beat.
+      const beat = await reelBeat("auto", clip, startT, duration);
+      grid = beat.grid;
+      if (beat.from === "movement") result.notes.push("The sound has no clear beat, so the beat comes from the people's movement.");
     }
     dlog("info", `Beat: ${grid.bpm} BPM, ${grid.beats.length} beats, confidence ${grid.confidence.toFixed(2)}`);
   }
 
   if (music === "beat") {
     let { beats, phase } = grid;
-    if (grid.confidence < 0.15 || beats.length < 4) {
-      // No clear pulse to follow (for example unaccompanied singing): a steady 100 BPM instead.
+    if (grid.confidence < MIN_BEAT || beats.length < 4) {
+      // No clear pulse to follow (for example unaccompanied singing, standing still): a steady 100 BPM.
       beats = [];
       for (let t = 0.3; t < duration; t += 0.6) beats.push(t);
       phase = 0;
-      result.notes.push("No clear beat in the performance, so the drums keep a steady 100 BPM.");
+      result.notes.push("No clear beat in the performance's sound or movement, so the drums keep a steady 100 BPM.");
     }
     const drums = synthDrums(beats, phase, duration, 44100);
     result.music = { name: "music.wav", bytes: encodeWav(drums, 44100), volume: Number(els.musicVol.value) / 100, duck: "light" };
@@ -905,7 +999,7 @@ function updateSoundOptions() {
   try {
     localStorage.setItem(
       SOUND_KEY,
-      JSON.stringify({ noise: els.noise.value, music, musicVol: els.musicVol.value, voiceVol: els.voiceVol.value, cuts: els.beatCuts.checked, match: els.matchMusic.checked })
+      JSON.stringify({ noise: els.noise.value, music, musicVol: els.musicVol.value, voiceVol: els.voiceVol.value, cuts: els.beatCuts.checked, matchSource: els.matchSource.value })
     );
   } catch {
     // ignore
@@ -921,12 +1015,13 @@ try {
     if (saved.musicVol) els.musicVol.value = saved.musicVol;
     if (saved.voiceVol) els.voiceVol.value = saved.voiceVol;
     els.beatCuts.checked = !!saved.cuts;
-    if (saved.match === false) els.matchMusic.checked = false;
+    if (["auto", "sound", "movement", "off"].includes(saved.matchSource)) els.matchSource.value = saved.matchSource;
+    else if (saved.match === false) els.matchSource.value = "off"; // the earlier checkbox
   }
 } catch {
   // ignore
 }
-for (const el of [els.noise, els.music, els.musicVol, els.voiceVol, els.beatCuts, els.matchMusic]) {
+for (const el of [els.noise, els.music, els.musicVol, els.voiceVol, els.beatCuts, els.matchSource]) {
   el.addEventListener(el.type === "range" ? "input" : "change", updateSoundOptions);
 }
 els.musicFile.addEventListener("change", () => {
