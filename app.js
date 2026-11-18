@@ -25,10 +25,18 @@ import {
 // The multi-threaded ffmpeg core is several times faster but needs SharedArrayBuffer, which browsers
 // only allow on "cross-origin isolated" pages (vercel.json sends the headers for that). Anywhere
 // else, such as GitHub Pages or Safari, the single-threaded core is used.
-const MULTI_THREAD = typeof SharedArrayBuffer !== "undefined" && globalThis.crossOriginIsolated === true;
-const CORE_BASE = MULTI_THREAD
-  ? "https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm"
-  : "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
+// ffmpeg.wasm's multi-threaded build can hang on some devices (it has on an Android phone, while
+// starting up), so it gets a time limit to start and a watchdog while it works. If either trips, the
+// app switches to the single-threaded core, and this device remembers to use that from then on.
+const MULTI_THREAD_SUPPORTED = typeof SharedArrayBuffer !== "undefined" && globalThis.crossOriginIsolated === true;
+const CORES = {
+  multi: "https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm",
+  single: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm",
+};
+const MT_FAILED_KEY = "reelmaker.multiThreadFailedAt";
+const MT_RETRY_AFTER_MS = 30 * 24 * 3600 * 1000; // try the fast engine again after 30 days
+const MT_START_TIMEOUT_MS = 20000;
+const STALL_TIMEOUT_MS = 45000; // no output from the fast engine for this long = stalled
 const FONT_URL = "fonts/Poppins-Bold.ttf";
 // Face tracking is loaded only when it's used, so if this CDN is unreachable the rest of the app
 // still works and the crop falls back to the position slider.
@@ -69,8 +77,9 @@ const els = {
   download: $("download"),
 };
 
-const ffmpeg = new FFmpeg();
-let engineReady = false;
+let ffmpeg = null; // the loaded engine, or null
+let engineMode = null; // "multi" or "single"
+let lastLogAt = 0;
 let fontBytes = null;
 let inputFile = null;
 let inputName = "input.mp4";
@@ -146,31 +155,104 @@ function stopTimer(ok) {
   document.title = ok ? `Done · ${PAGE_TITLE}` : PAGE_TITLE;
 }
 
-ffmpeg.on("log", ({ message }) => {
+function onEngineLog({ message }) {
+  lastLogAt = performance.now();
   if (!timer.encoding) return;
   const t = parseEncodedTime(message);
   if (t == null) return;
   timer.encoded = Math.min(timer.total, t);
   els.progress.value = timer.total ? timer.encoded / timer.total : 0;
-});
+}
 
 function setStatus(text) {
   els.status.textContent = text;
 }
 
-async function loadEngine() {
-  if (engineReady) return;
-  setStatus("Loading video engine (first time only, a few seconds)…");
-  const config = {
-    coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
-    wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
-  };
-  if (MULTI_THREAD) {
-    config.workerURL = await toBlobURL(`${CORE_BASE}/ffmpeg-core.worker.js`, "text/javascript");
+class EngineStalled extends Error {}
+
+function multiThreadFailedRecently() {
+  try {
+    const at = Number(localStorage.getItem(MT_FAILED_KEY));
+    return at > 0 && Date.now() - at < MT_RETRY_AFTER_MS;
+  } catch {
+    return false;
   }
-  await ffmpeg.load(config);
-  engineReady = true;
-  console.info(`Video engine loaded (${MULTI_THREAD ? "multi-threaded" : "single-threaded"}).`);
+}
+
+function giveUpOnMultiThread(reason) {
+  console.warn("Fast (multi-threaded) video engine failed; using the standard one.", reason);
+  try {
+    localStorage.setItem(MT_FAILED_KEY, String(Date.now()));
+  } catch {
+    // storage unavailable: this page load still switches
+  }
+  if (ffmpeg) ffmpeg.terminate();
+  ffmpeg = null;
+  engineMode = null;
+}
+
+const withTimeout = (promise, ms, message) => {
+  let id;
+  const timeout = new Promise((_, reject) => {
+    id = setTimeout(() => reject(new EngineStalled(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
+};
+
+async function download(url, type, showProgress) {
+  return toBlobURL(url, type, showProgress, ({ total, received }) => {
+    if (total > 0) setStatus(`Downloading video engine (first time only)… ${Math.round((100 * received) / total)}%`);
+  });
+}
+
+async function loadCore(mode) {
+  const base = CORES[mode];
+  setStatus("Downloading video engine (first time only)…");
+  const config = {
+    coreURL: await download(`${base}/ffmpeg-core.js`, "text/javascript", false),
+    wasmURL: await download(`${base}/ffmpeg-core.wasm`, "application/wasm", true),
+  };
+  if (mode === "multi") config.workerURL = await download(`${base}/ffmpeg-core.worker.js`, "text/javascript", false);
+  setStatus("Starting video engine…");
+  const engine = new FFmpeg();
+  engine.on("log", onEngineLog);
+  ffmpeg = engine;
+  const loading = engine.load(config);
+  await (mode === "multi"
+    ? withTimeout(loading, MT_START_TIMEOUT_MS, "The fast video engine didn't start")
+    : loading);
+  engineMode = mode;
+  console.info(`Video engine loaded (${mode === "multi" ? "multi-threaded" : "single-threaded"}).`);
+}
+
+async function loadEngine() {
+  if (ffmpeg && engineMode) return;
+  if (MULTI_THREAD_SUPPORTED && !multiThreadFailedRecently()) {
+    try {
+      await loadCore("multi");
+      return;
+    } catch (err) {
+      giveUpOnMultiThread(err);
+    }
+  }
+  await loadCore("single");
+}
+
+// Runs ffmpeg. With the fast engine, a watchdog rejects if ffmpeg goes quiet for too long.
+async function execWatched(args) {
+  if (engineMode !== "multi") return ffmpeg.exec(args);
+  lastLogAt = performance.now();
+  let id;
+  const stalled = new Promise((_, reject) => {
+    id = setInterval(() => {
+      if (performance.now() - lastLogAt > STALL_TIMEOUT_MS) reject(new EngineStalled("The fast video engine stalled"));
+    }, 2000);
+  });
+  try {
+    return await Promise.race([ffmpeg.exec(args), stalled]);
+  } finally {
+    clearInterval(id);
+  }
 }
 
 async function loadFont() {
@@ -424,9 +506,6 @@ els.go.addEventListener("click", async () => {
       }
     }
 
-    await loadEngine();
-    setStatus("Building your reel… keep this tab open.");
-
     const { args, textFiles } = buildCommand({
       inputName,
       start: startT,
@@ -439,25 +518,38 @@ els.go.addEventListener("click", async () => {
       grade: els.grade.checked,
       captionStyle: els.captionStyle.value,
     });
+    for (const f of textFiles) usedFiles.push(f.name);
 
-    await ffmpeg.writeFile(inputName, await fetchFile(inputFile));
+    const encode = async () => {
+      await loadEngine();
+      setStatus("Building your reel… keep this tab open and the screen on.");
+      await ffmpeg.writeFile(inputName, await fetchFile(inputFile));
+      try {
+        await ffmpeg.createDir(FONT_DIR);
+      } catch {
+        // already there from an earlier reel
+      }
+      await ffmpeg.writeFile(FONT_FILE, await loadFont());
+      if (keys) await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys, geometry.axis)));
+      for (const f of textFiles) await ffmpeg.writeFile(f.name, new TextEncoder().encode(f.text));
+
+      startEncodingTimer();
+      const exitCode = await execWatched(args);
+      if (exitCode !== 0) throw new Error(`ffmpeg exited with code ${exitCode}`);
+      return ffmpeg.readFile("output.mp4");
+    };
+
+    let data;
     try {
-      await ffmpeg.createDir(FONT_DIR);
-    } catch {
-      // already there from an earlier reel
+      data = await encode();
+    } catch (err) {
+      if (engineMode !== "multi" && !(err instanceof EngineStalled)) throw err;
+      // The fast engine hung or failed: start this reel again on the standard engine.
+      giveUpOnMultiThread(err);
+      setStatus("The fast engine didn't work on this device, so switching to the standard one…");
+      timer.encoding = false;
+      data = await encode();
     }
-    await ffmpeg.writeFile(FONT_FILE, await loadFont());
-    if (keys) await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys, geometry.axis)));
-    for (const f of textFiles) {
-      usedFiles.push(f.name);
-      await ffmpeg.writeFile(f.name, new TextEncoder().encode(f.text));
-    }
-
-    startEncodingTimer();
-    const exitCode = await ffmpeg.exec(args);
-    if (exitCode !== 0) throw new Error(`ffmpeg exited with code ${exitCode}`);
-
-    const data = await ffmpeg.readFile("output.mp4");
     const blob = new Blob([data.buffer], { type: "video/mp4" });
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     downloadUrl = URL.createObjectURL(blob);
@@ -481,7 +573,7 @@ els.go.addEventListener("click", async () => {
     stopTimer(ok);
     for (const name of usedFiles) {
       try {
-        await ffmpeg.deleteFile(name);
+        if (ffmpeg) await ffmpeg.deleteFile(name);
       } catch {
         // file was never written
       }
