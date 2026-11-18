@@ -2,16 +2,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cropGeometry, trackFileText, buildCommand, FONT_FILE } from "../editor.js";
+import { cropGeometry, trackFileText, buildCommand, FONT_FILE, FONT_DIR } from "../editor.js";
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
-test("the generated command renders a 1080x1920 reel with 48 kHz audio", { skip: !hasFfmpeg && "ffmpeg not installed" }, () => {
+for (const captionStyle of ["classic", "karaoke", "pop"])
+test(`the generated command renders a 1080x1920 reel with 48 kHz audio (${captionStyle} captions)`, { skip: !hasFfmpeg && "ffmpeg not installed" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "reel-test-"));
   try {
     const run = (cmd, args) => execFileSync(cmd, args, { cwd: dir, stdio: ["ignore", "pipe", "pipe"] }).toString();
@@ -19,6 +20,7 @@ test("the generated command renders a 1080x1920 reel with 48 kHz audio", { skip:
       "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=5",
       "-f", "lavfi", "-i", "sine=f=440:d=5", "-shortest", "-pix_fmt", "yuv420p", "input.mp4",
     ]);
+    mkdirSync(join(dir, FONT_DIR));
     copyFileSync(join(root, "fonts/Poppins-Bold.ttf"), join(dir, FONT_FILE));
 
     const geometry = cropGeometry(1280, 720);
@@ -34,13 +36,14 @@ test("the generated command renders a 1080x1920 reel with 48 kHz audio", { skip:
       captions: [{ text: "100% of my heart belongs to you forever and ever my love", a: 0, b: 4 }],
       title: "Test Title",
       grade: true,
+      captionStyle,
     });
     for (const f of textFiles) writeFileSync(join(dir, f.name), f.text);
 
     const res = spawnSync("ffmpeg", ["-v", "warning", "-y", ...args], { cwd: dir });
     const log = res.stderr.toString();
     assert.equal(res.status, 0, log);
-    assert.doesNotMatch(log, /Stray %/);
+    assert.doesNotMatch(log, /Stray %|fontselect|[Nn]o usable fontconfig|Glyph 0x|font provider/);
 
     const probe = run("ffprobe", [
       "-v", "error", "-show_entries", "stream=codec_type,width,height,sample_rate", "-of", "csv=p=0", "output.mp4",

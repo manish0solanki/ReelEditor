@@ -51,10 +51,17 @@
         <input id="title" type="text" placeholder="e.g. Tum Hi Ho" />
       </label>
       <label>Lyrics: one line per lyric, starting with its time in the original video
-        <textarea id="lyrics" rows="8" placeholder="0:12 First line of the song&#10;0:17 Second line&#10;0:22 Third line"></textarea>
+        <textarea id="lyrics" rows="8" placeholder="0:12 First line of the song&#10;0:17-0:20 Second line&#10;0:22 Third line"></textarea>
       </label>
       <p id="lyricsWarn" class="warn" hidden></p>
-      <small>Use the Latin alphabet (for example, romanized Hindi). Other scripts may not display.</small>
+      <small>Use the Latin alphabet (for example, romanized Hindi). Other scripts may not display. Word timing is estimated; for a tighter fit, add when the line ends, like <code>0:17-0:20</code>.</small>
+      <label>Caption style
+        <select id="captionStyle">
+          <option value="pop" selected>Bold pop: 2–3 big words at a time, current word highlighted</option>
+          <option value="karaoke">Karaoke: whole line, words light up as they're sung</option>
+          <option value="classic">Classic: whole line, plain</option>
+        </select>
+      </label>
     </section>
 
     <section class="card">

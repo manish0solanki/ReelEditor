@@ -7,7 +7,7 @@ A webpage that turns a landscape performance video into a polished vertical 1080
 - **Any orientation:** landscape, portrait, and tall phone videos all work.
 - **Trims to the song automatically:** listens to the video's sound, starts the reel 2 seconds before the singing begins, keeps any instrumental ending, and cuts the talking or silence after the song. The Start and End boxes are filled in so you can adjust them, or untick the option and set them yourself (accepts `1:23` or `83`).
 - **Keeps the singer centered** by detecting the face in frames sampled every half second, then smoothing the crop path so it doesn't jitter. If no face is found, it uses the fallback position slider.
-- **Lyric captions** timed to the original video. Each line stays on screen until the next line starts.
+- **Animated lyric captions** timed to the original video, in three styles: **Bold pop** (2–3 big words at a time, the current word highlighted, each group popping in), **Karaoke** (the whole line, each word lighting up as it's sung), or **Classic** (the whole line). Long lines wrap automatically.
 - **Title** shown over the first few seconds.
 - **Color and sharpness boost** (optional).
 - **Fades** in from and out to black.
@@ -53,6 +53,12 @@ One line per lyric, starting with the time in the original video:
 
 Times are measured from the start of the original video, not from the trimmed clip.
 
+Word-by-word timing is estimated by spreading each line's words over its singing time, giving longer words more time. For a tighter fit, add when the line's singing ends:
+
+```
+0:12-0:16 First line of the song
+```
+
 Long lines wrap onto two lines automatically, and shrink a little if they still don't fit. The song title wraps the same way.
 
 ## Limits and notes
@@ -60,7 +66,7 @@ Long lines wrap onto two lines automatically, and shrink a little if they still 
 - **Language:** captions use the bundled Poppins font, which covers the Latin alphabet. Hindi and other scripts need a font file that includes them, placed in `fonts/` and named in `app.js`. Romanized lyrics work now.
 - **Song detection** uses Google's YAMNet sound classifier (through MediaPipe), loaded from the internet the first time. It scores each second of sound for singing, music, speech, and applause. It skips an instrumental intro and stops when the music stops. If it can't pick out the singing, it trims to the music instead. If it finds no music, it leaves Start and End for you to set. A phone recording where the voice is clear works best.
 - **Face tracking** uses MediaPipe's face detector, loaded from the internet the first time. It works best when the singer's face is clearly visible and reasonably large.
-- **Speed:** building a reel takes several times the clip's length on a phone, and very long clips can run out of memory. Instagram reels can be at most 3 minutes.
+- **Speed:** the multi-threaded video engine is used where the browser allows it, which needs the page to be "cross-origin isolated". `vercel.json` sends the two headers for that on Vercel. On hosts that can't set headers (such as GitHub Pages), and in Safari, the slower single-threaded engine is used. In a headless-Chrome test on 4 cores, a 20-second reel took 34 s multi-threaded, 60 s single-threaded, and 118 s with the old settings. Even so, building a reel takes a while on a phone, and very long clips can run out of memory. Instagram reels can be at most 3 minutes.
 - **Any orientation:** landscape, square, portrait, and tall phone videos are all accepted. Wider sources crop sideways and taller ones crop up and down, and face tracking follows the singer on that axis.
 - **Audio required:** videos with no audio track will fail at the audio step.
 - **Testing:** the caption, crop, and fade logic are covered by `npm test`. The full app has been run end to end in headless Chromium, but face tracking has only been tried on test footage without faces, so bug reports are welcome.
@@ -74,4 +80,5 @@ Long lines wrap onto two lines automatically, and shrink a little if they still 
 - `app.js`: browser glue: file input, face tracking, the ffmpeg engine, and the download.
 - `fonts/Poppins-Bold.ttf`: caption font (SIL Open Font License).
 - `test/`: tests for `editor.js`.
+- `vercel.json`: the headers that let the faster multi-threaded engine run on Vercel.
 - `vendor/`: the ffmpeg.wasm wrapper, served from this site because browsers won't start its worker from a CDN. See `vendor/README.md`.

@@ -116,13 +116,16 @@ label:not(.upload):not(.check):not(.slider) {
   margin-bottom: 10px;
 }
 
-input[type="text"], textarea {
+input[type="text"], textarea, select {
   font: inherit;
   font-weight: 400;
   padding: 8px;
   border: 1px solid #c8c8ce;
   border-radius: 8px;
   width: 100%;
+  background: #fff;
 }
+
+code { font-size: 0.95em; }
 
 .warn { color: #b3261e; font-weight: 600; }

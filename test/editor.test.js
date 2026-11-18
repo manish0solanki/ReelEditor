@@ -197,10 +197,18 @@ test("buildCommand: audio is resampled to 48 kHz after loudnorm", () => {
 });
 
 test("buildCommand: crop and track only when the source needs cropping", () => {
-  assert.match(filters(build().args), /^sendcmd=f=track\.txt,crop=w=\d+:h=1080:x=100:y=0,scale=1080:1920/);
+  assert.match(filters(build({ grade: false }).args), /^sendcmd=f=track\.txt,crop=w=\d+:h=1080:x=100:y=0,scale=1080:1920/);
   assert.match(filters(build({ hasTrack: false }).args), /^crop=/);
-  assert.match(filters(build({ geometry: cropGeometry(1080, 1920) }).args), /^scale=1080:1920/);
+  assert.match(filters(build({ geometry: cropGeometry(1080, 1920), grade: false }).args), /^scale=1080:1920/);
   assert.match(filters(build({ geometry: cropGeometry(1080, 2400) }).args), /crop=w=1080:h=\d+:x=0:y=100/);
+});
+
+test("buildCommand: the colour boost runs on the crop, before the upscale (much cheaper)", () => {
+  const vf = filters(build().args);
+  assert.ok(vf.indexOf("eq=") < vf.indexOf("scale=") && vf.indexOf("unsharp=") < vf.indexOf("scale="), vf);
+  assert.ok(vf.indexOf("crop=") < vf.indexOf("eq="), vf);
+  const { args } = build();
+  assert.equal(args[args.indexOf("-preset") + 1], "ultrafast");
 });
 
 test("buildCommand: fades only on clips longer than 2 seconds", () => {

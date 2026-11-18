@@ -5,6 +5,7 @@ import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
   SAMPLE_STEP,
   FONT_FILE,
+  FONT_DIR,
   parseTime,
   parseLyrics,
   captionWindows,
@@ -21,8 +22,13 @@ import {
   estimateRemaining,
 } from "./editor.js";
 
-// Single-threaded ffmpeg core: works on GitHub Pages without special server headers.
-const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
+// The multi-threaded ffmpeg core is several times faster but needs SharedArrayBuffer, which browsers
+// only allow on "cross-origin isolated" pages (vercel.json sends the headers for that). Anywhere
+// else, such as GitHub Pages or Safari, the single-threaded core is used.
+const MULTI_THREAD = typeof SharedArrayBuffer !== "undefined" && globalThis.crossOriginIsolated === true;
+const CORE_BASE = MULTI_THREAD
+  ? "https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm"
+  : "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
 const FONT_URL = "fonts/Poppins-Bold.ttf";
 // Face tracking is loaded only when it's used, so if this CDN is unreachable the rest of the app
 // still works and the crop falls back to the position slider.
@@ -53,6 +59,7 @@ const els = {
   title: $("title"),
   lyrics: $("lyrics"),
   lyricsWarn: $("lyricsWarn"),
+  captionStyle: $("captionStyle"),
   go: $("go"),
   output: $("output"),
   progress: $("progress"),
@@ -154,11 +161,16 @@ function setStatus(text) {
 async function loadEngine() {
   if (engineReady) return;
   setStatus("Loading video engine (first time only, a few seconds)…");
-  await ffmpeg.load({
+  const config = {
     coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
     wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
-  });
+  };
+  if (MULTI_THREAD) {
+    config.workerURL = await toBlobURL(`${CORE_BASE}/ffmpeg-core.worker.js`, "text/javascript");
+  }
+  await ffmpeg.load(config);
   engineReady = true;
+  console.info(`Video engine loaded (${MULTI_THREAD ? "multi-threaded" : "single-threaded"}).`);
 }
 
 async function loadFont() {
@@ -425,9 +437,15 @@ els.go.addEventListener("click", async () => {
       captions,
       title: els.title.value.trim(),
       grade: els.grade.checked,
+      captionStyle: els.captionStyle.value,
     });
 
     await ffmpeg.writeFile(inputName, await fetchFile(inputFile));
+    try {
+      await ffmpeg.createDir(FONT_DIR);
+    } catch {
+      // already there from an earlier reel
+    }
     await ffmpeg.writeFile(FONT_FILE, await loadFont());
     if (keys) await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys, geometry.axis)));
     for (const f of textFiles) {

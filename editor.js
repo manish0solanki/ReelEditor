@@ -1,7 +1,10 @@
 // Pure editing logic: no DOM, no ffmpeg. Shared by the browser app and by tests.
 
 export const SAMPLE_STEP = 0.5; // seconds between face-detection samples
-export const FONT_FILE = "font.ttf"; // name the font is written to inside ffmpeg's file system
+// The font lives in its own folder inside ffmpeg's file system: the subtitle renderer loads every
+// file in its fonts folder, and the root also holds the (large) input video.
+export const FONT_DIR = "fonts";
+export const FONT_FILE = `${FONT_DIR}/font.ttf`;
 
 const TARGET = 9 / 16; // reel shape: width / height
 
@@ -21,10 +24,12 @@ export function parseLyrics(text) {
   text.split("\n").forEach((raw, i) => {
     const line = raw.trim();
     if (!line) return;
-    const m = line.match(/^(\S+)\s+(.+)$/);
+    // "0:12 text", or "0:12-0:16 text" to say when the line's singing ends (for word timing).
+    const m = line.match(/^([^\s-]+)(?:-([^\s-]+))?\s+(.+)$/);
     const time = m ? parseTime(m[1]) : NaN;
-    if (Number.isNaN(time)) bad.push(i + 1);
-    else items.push({ time, text: m[2].trim() });
+    const end = m && m[2] !== undefined ? parseTime(m[2]) : undefined;
+    if (Number.isNaN(time) || Number.isNaN(end) || (end !== undefined && end <= time)) bad.push(i + 1);
+    else items.push(end === undefined ? { time, text: m[3].trim() } : { time, end, text: m[3].trim() });
   });
   items.sort((a, b) => a.time - b.time);
   return { items, bad };
@@ -37,7 +42,10 @@ export function captionWindows(items, start, duration) {
     const a = Math.max(0, item.time - start);
     const next = i + 1 < items.length ? items[i + 1].time - start : duration;
     const b = Math.min(duration, next);
-    if (b > a && a < duration) out.push({ text: item.text, a, b });
+    if (!(b > a && a < duration)) return;
+    const c = { text: item.text, a, b };
+    if (item.end !== undefined) c.sungEnd = Math.min(b, Math.max(a, item.end - start));
+    out.push(c);
   });
   return out;
 }
@@ -230,6 +238,7 @@ export function buildCommand({
   captions,
   title,
   grade,
+  captionStyle = "classic",
 }) {
   const textFiles = [];
   const v = [];
@@ -243,12 +252,14 @@ export function buildCommand({
         : `crop=w=${cropW}:h=${cropH}:x=0:y=${staticOffset}`
     );
   }
-  v.push(`scale=${FRAME_W}:${FRAME_H}`);
-
+  // Grade before upscaling: the cropped frame has about a third of the pixels of 1080x1920,
+  // so the colour and sharpening filters cost a third as much. (Sharpening the source detail
+  // before the upscale also looks at least as good as sharpening the upscaled result.)
   if (grade) {
     v.push("eq=contrast=1.08:saturation=1.12:brightness=0.02");
-    v.push("unsharp=5:5:0.6:5:5:0.0");
+    v.push("unsharp=3:3:0.8:3:3:0.0");
   }
+  v.push(`scale=${FRAME_W}:${FRAME_H}`);
 
   if (title) {
     addTextBlock({
@@ -257,12 +268,17 @@ export function buildCommand({
     });
   }
 
-  captions.forEach((c, i) => {
-    addTextBlock({
-      v, textFiles, prefix: `caption${i}`, text: c.text, fit: CAPTION_FIT,
-      y: CAPTION_BOTTOM, anchor: "bottom", a: c.a, b: c.b,
+  if (captionStyle !== "classic" && captions.length) {
+    textFiles.push({ name: "captions.ass", text: buildAss(captions, captionStyle) });
+    v.push(`subtitles=filename=captions.ass:fontsdir=${FONT_DIR}`);
+  } else {
+    captions.forEach((c, i) => {
+      addTextBlock({
+        v, textFiles, prefix: `caption${i}`, text: c.text, fit: CAPTION_FIT,
+        y: CAPTION_BOTTOM, anchor: "bottom", a: c.a, b: c.b,
+      });
     });
-  });
+  }
 
   const fadeOutAt = (duration - 1).toFixed(2);
   if (duration > 2) {
@@ -280,8 +296,10 @@ export function buildCommand({
     "-vf", v.join(","),
     "-af", a.join(","),
     "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-crf", "23",
+    // ultrafast is about 2x quicker than veryfast in the browser. Its files are larger, so the quality
+    // setting is nudged up (lower crf) to compensate; Instagram re-encodes uploads anyway.
+    "-preset", "ultrafast",
+    "-crf", "21",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
     // loudnorm works at 192 kHz internally; without this the reel's audio comes out at 96 kHz.
@@ -407,4 +425,150 @@ export function estimateRemaining({ total, encoded, encodeElapsed, savedRate = n
     }
   }
   return rate == null ? null : left * rate;
+}
+
+// ---- Animated captions (ASS subtitles, drawn by ffmpeg's libass) -------------------------------
+// "karaoke": the whole line, each word filling with colour as it's sung.
+// "pop": 2-3 big uppercase words at a time; the word being sung is highlighted and each group pops in.
+// Word times are estimated by spreading the line's words over its singing time, weighted by syllables.
+
+export const CAPTION_STYLES = ["pop", "karaoke", "classic"];
+const HIGHLIGHT = "&H0000E5FF&"; // ASS colours are &HBBGGRR: this is #FFE500
+const WHITE = "&H00FFFFFF&";
+const POP_FIT = { size: 100, minSize: 64, maxLines: 2 };
+// libass sizes text by the font's full line height, which for Poppins draws glyphs smaller than
+// drawtext does at the same size (capital M: 40 px vs 70 px at size 100, measured with ffmpeg).
+// Sizes here are in drawtext terms, so the wrapping maths stays the same, and are scaled for libass.
+const ASS_FONT_SCALE = 1.75;
+const assSize = (size) => Math.round(size * ASS_FONT_SCALE);
+const POP_MAX_WORDS = 3;
+const POP_MAX_CHARS = 16;
+const SECONDS_PER_WORD = 0.8; // typical sung pace, used when a line has no end time
+const POP_HOLD = 1.2; // how long the last group stays after its last word (if the next line isn't sooner)
+
+function syllables(word) {
+  return Math.max(1, (word.toLowerCase().match(/[aeiouy]+/g) || []).length);
+}
+
+// [{ word, s, e }] for a caption window { text, a, b, sungEnd? }.
+export function wordTimings({ text, a, b, sungEnd }) {
+  const words = String(text).trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const span =
+    sungEnd !== undefined
+      ? Math.max(0.2, sungEnd - a)
+      : Math.min(0.9 * (b - a), Math.max(1, words.length * SECONDS_PER_WORD));
+  const weights = words.map(syllables);
+  const total = weights.reduce((x, y) => x + y, 0);
+  let t = a;
+  return words.map((word, i) => {
+    const s = t;
+    t += (span * weights[i]) / total;
+    return { word, s, e: i === words.length - 1 ? a + span : t };
+  });
+}
+
+// Braces and backslashes start ASS override codes, so they can't appear literally in lyrics.
+const assText = (t) => t.replace(/\\/g, "/").replace(/{/g, "(").replace(/}/g, ")");
+
+// 83.456 -> "0:01:23.46"
+export function assTime(seconds) {
+  const cs = Math.max(0, Math.round(seconds * 100));
+  const h = Math.floor(cs / 360000);
+  const m = Math.floor((cs % 360000) / 6000);
+  const s = (cs % 6000) / 100;
+  return `${h}:${String(m).padStart(2, "0")}:${s.toFixed(2).padStart(5, "0")}`;
+}
+
+// Puts "\N" line breaks into a list of word strings where fitText wrapped them.
+function joinWrapped(words, lines) {
+  const counts = lines.map((l) => l.split(" ").length);
+  if (counts.reduce((x, y) => x + y, 0) !== words.length) return words.join(" "); // a word was hard-split
+  const out = [];
+  let i = 0;
+  counts.forEach((n, li) => {
+    out.push(words.slice(i, i + n).join(" "));
+    i += n;
+    if (li < counts.length - 1) out.push("\\N");
+  });
+  return out.join(" ").replace(/ \\N /g, "\\N");
+}
+
+function dialogue(start, end, style, text) {
+  return `Dialogue: 0,${assTime(start)},${assTime(end)},${style},,0,0,0,,${text}`;
+}
+
+function karaokeEvents(c) {
+  const timed = wordTimings(c);
+  if (!timed.length) return [];
+  const { size, lines } = fitText(c.text, CAPTION_FIT);
+  // \kf<centiseconds> fills a word over that time; a word's tag also covers any gap before the next.
+  const words = timed.map((w, i) => {
+    const until = i + 1 < timed.length ? timed[i + 1].s : w.e;
+    const cs = Math.max(1, Math.round((until - w.s) * 100));
+    return `{\\kf${cs}}${assText(w.word)}`;
+  });
+  return [dialogue(c.a, c.b, "Karaoke", `{\\fs${assSize(size)}}` + joinWrapped(words, lines))];
+}
+
+// Groups words into chunks of up to POP_MAX_WORDS, keeping each chunk short enough to read at a glance.
+function popChunks(timed) {
+  const chunks = [];
+  let cur = [];
+  for (const w of timed) {
+    const chars = cur.map((x) => x.word).join(" ").length + (cur.length ? 1 : 0) + w.word.length;
+    if (cur.length && (cur.length >= POP_MAX_WORDS || chars > POP_MAX_CHARS)) {
+      chunks.push(cur);
+      cur = [];
+    }
+    cur.push(w);
+  }
+  if (cur.length) chunks.push(cur);
+  return chunks;
+}
+
+function popEvents(c) {
+  const timed = wordTimings(c);
+  const chunks = popChunks(timed);
+  const events = [];
+  chunks.forEach((chunk, ci) => {
+    const upper = chunk.map((w) => assText(w.word.toUpperCase()));
+    const { size, lines } = fitText(upper.join(" "), POP_FIT);
+    const chunkEnd =
+      ci + 1 < chunks.length ? chunks[ci + 1][0].s : Math.min(c.b, chunk[chunk.length - 1].e + POP_HOLD);
+    chunk.forEach((w, wi) => {
+      const start = w.s;
+      const end = wi + 1 < chunk.length ? chunk[wi + 1].s : chunkEnd;
+      if (end <= start) return;
+      const words = upper.map((u, k) => (k === wi ? `{\\c${HIGHLIGHT}}${u}{\\c${WHITE}}` : u));
+      // The group pops in (80% -> 100% size) when it first appears.
+      const pop = wi === 0 ? "\\fscx80\\fscy80\\t(0,120,\\fscx100\\fscy100)" : "";
+      events.push(dialogue(start, end, "Pop", `{\\fs${assSize(size)}${pop}}` + joinWrapped(words, lines)));
+    });
+  });
+  return events;
+}
+
+export function buildAss(captions, style) {
+  const karaokeMarginV = FRAME_H - CAPTION_BOTTOM;
+  const popMarginV = Math.round(FRAME_H * 0.3);
+  const header = [
+    "[Script Info]",
+    "ScriptType: v4.00+",
+    `PlayResX: ${FRAME_W}`,
+    `PlayResY: ${FRAME_H}`,
+    "WrapStyle: 2", // no automatic wrapping: lines are broken by fitText, the same as everywhere else
+    "ScaledBorderAndShadow: yes",
+    "",
+    "[V4+ Styles]",
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    // Karaoke fills from SecondaryColour (white, not yet sung) to PrimaryColour (highlight).
+    `Style: Karaoke,Poppins,${assSize(CAPTION_FIT.size)},${HIGHLIGHT},${WHITE},&H00000000&,&H80000000&,-1,0,0,0,100,100,0,0,1,5,2,2,${TEXT_MARGIN},${TEXT_MARGIN},${karaokeMarginV},1`,
+    `Style: Pop,Poppins,${assSize(POP_FIT.size)},${WHITE},${WHITE},&H00000000&,&H80000000&,-1,0,0,0,100,100,0,0,1,7,3,2,${TEXT_MARGIN},${TEXT_MARGIN},${popMarginV},1`,
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+  ];
+  const events = captions.flatMap((c) => (style === "karaoke" ? karaokeEvents(c) : popEvents(c)));
+  return header.concat(events).join("\n") + "\n";
 }
