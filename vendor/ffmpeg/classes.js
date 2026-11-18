@@ -25,6 +25,20 @@ export class FFmpeg {
      */
     #registerHandlers = () => {
         if (this.#worker) {
+            // [Reel Maker patch] If the worker fails to load or crashes, report it and fail the pending
+            // calls, instead of leaving them waiting forever.
+            const fail = (message) => {
+                this.#logEventCallbacks.forEach((f) => f({ type: "stderr", message }));
+                const rejects = Object.values(this.#rejects);
+                this.#resolves = {};
+                this.#rejects = {};
+                rejects.forEach((reject) => reject(new Error(message)));
+            };
+            this.#worker.onerror = (e) => {
+                e.preventDefault?.();
+                fail(`Video engine worker error: ${e.message || "the worker script failed to load"}${e.filename ? ` (${e.filename}:${e.lineno})` : ""}`);
+            };
+            this.#worker.onmessageerror = () => fail("Video engine worker sent a message that couldn't be read");
             this.#worker.onmessage = ({ data: { id, type, data }, }) => {
                 switch (type) {
                     case FFMessageType.LOAD:

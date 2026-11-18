@@ -81,7 +81,8 @@ const els = {
 };
 
 let ffmpeg = null; // the loaded engine, or null
-let engineMode = null; // "multi" or "single"
+let engineMode = null; // "multi" or "single", once loaded
+let attemptMode = null; // the engine last being loaded or used
 let lastLogAt = 0;
 let fontBytes = null;
 let inputFile = null;
@@ -235,6 +236,7 @@ async function loadCore(mode) {
     wasmURL: await download(`${base}/ffmpeg-core.wasm`, "application/wasm", true),
   };
   if (mode === "multi") config.workerURL = await download(`${base}/ffmpeg-core.worker.js`, "text/javascript", false);
+  attemptMode = mode;
   const label = mode === "multi" ? "fast (multi-threaded)" : "standard (single-threaded)";
   setStatus(`Starting video engine (${mode === "multi" ? "fast" : "standard"})…`);
   const engine = new FFmpeg();
@@ -251,6 +253,11 @@ async function loadCore(mode) {
       mode === "multi" ? MT_START_TIMEOUT_MS : SINGLE_START_TIMEOUT_MS,
       `The ${label} video engine didn't start within ${(mode === "multi" ? MT_START_TIMEOUT_MS : SINGLE_START_TIMEOUT_MS) / 1000} s`
     );
+  } catch (err) {
+    // A failed engine can't answer any more calls: drop it so nothing waits on it.
+    engine.terminate();
+    if (ffmpeg === engine) ffmpeg = null;
+    throw err;
   } finally {
     clearInterval(heartbeat);
   }
@@ -269,7 +276,10 @@ async function loadEngine() {
   if (choice === "multi" && !MULTI_THREAD_SUPPORTED) {
     dlog("warn", "The fast engine can't run on this page (not cross-origin isolated), so using the standard one.");
   }
-  const tryMulti = MULTI_THREAD_SUPPORTED && (choice === "multi" || (choice === "auto" && !failedBefore));
+  // On the /fast test page, always try the fast engine (unless Standard is forced).
+  const onFastPage = location.pathname.replace(/\/$/, "") === "/fast";
+  const tryMulti =
+    MULTI_THREAD_SUPPORTED && (choice === "multi" || (choice === "auto" && (!failedBefore || onFastPage)));
   if (tryMulti && choice !== "single") {
     try {
       await loadCore("multi");
@@ -588,7 +598,8 @@ els.go.addEventListener("click", async () => {
     try {
       data = await encode();
     } catch (err) {
-      if ((engineMode !== "multi" && !(err instanceof EngineStalled)) || engineChoice() === "multi") throw err;
+      // Retry only when it was the fast engine that failed (not when the user forced it).
+      if (attemptMode !== "multi" || engineChoice() === "multi") throw err;
       // The fast engine hung or failed: start this reel again on the standard engine.
       giveUpOnMultiThread(err);
       setStatus("The fast engine didn't work on this device, so switching to the standard one…");
@@ -620,11 +631,14 @@ els.go.addEventListener("click", async () => {
     );
   } finally {
     stopTimer(ok);
-    for (const name of usedFiles) {
-      try {
-        if (ffmpeg) await ffmpeg.deleteFile(name);
-      } catch {
-        // file was never written
+    // Tidy up through a working engine only (a dead one would never answer).
+    if (ffmpeg && engineMode) {
+      for (const name of usedFiles) {
+        try {
+          await withTimeout(ffmpeg.deleteFile(name), 5000, "delete timed out");
+        } catch {
+          // file was never written
+        }
       }
     }
     els.go.disabled = false;
@@ -647,4 +661,11 @@ engineSelect.addEventListener("change", () => {
   engineMode = null;
   dlog("info", `Engine choice set to ${engineSelect.value}; it applies to the next reel.`);
 });
+const fastLink = document.getElementById("fastLink");
+if (MULTI_THREAD_SUPPORTED) {
+  fastLink.innerHTML = 'This is the fast-engine test page. <a href="/">Back to the normal page</a>.';
+} else {
+  fastLink.innerHTML =
+    'The fast (multi-threaded) engine only runs on the <a href="/fast">fast-engine test page</a>.';
+}
 dlog("info", `App ready · engine choice: ${engineChoice()} · fast engine failed recently: ${multiThreadFailedRecently()}`);

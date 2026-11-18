@@ -1,11 +1,17 @@
 {
+  "rewrites": [{ "source": "/fast", "destination": "/index.html" }],
   "headers": [
     {
-      "source": "/(.*)",
+      "source": "/fast",
       "headers": [
         { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
         { "key": "Cross-Origin-Embedder-Policy", "value": "credentialless" }
       ]
+    },
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "header", "key": "referer", "value": ".*/fast(\\?.*)?$" }],
+      "headers": [{ "key": "Cross-Origin-Embedder-Policy", "value": "credentialless" }]
     }
   ]
 }

@@ -4,8 +4,17 @@
 import { CORE_URL, FFMessageType } from "./const.js";
 import { ERROR_UNKNOWN_MESSAGE_TYPE, ERROR_NOT_LOADED, ERROR_IMPORT_FAILURE, } from "./errors.js";
 let ffmpeg;
+// [Reel Maker patch] Step-by-step notes and errors from inside the worker, sent to the page's log,
+// so a load that hangs on some device shows how far it got.
+const note = (message) => self.postMessage({ type: FFMessageType.LOG, data: { type: "info", message: `[engine] ${message}` } });
+const t0 = performance.now();
+const since = () => `${((performance.now() - t0) / 1000).toFixed(1)}s`;
+self.addEventListener("error", (e) => note(`worker error: ${e.message}`));
+self.addEventListener("unhandledrejection", (e) => note(`worker unhandled rejection: ${e.reason}`));
+note(`worker started (cross-origin isolated: ${self.crossOriginIsolated === true})`);
 const load = async ({ coreURL: _coreURL, wasmURL: _wasmURL, workerURL: _workerURL, }) => {
     const first = !ffmpeg;
+    note(`load requested at ${since()}`);
     try {
         if (!_coreURL)
             _coreURL = CORE_URL;
@@ -16,8 +25,16 @@ const load = async ({ coreURL: _coreURL, wasmURL: _wasmURL, workerURL: _workerUR
         if (!_coreURL)
             _coreURL = CORE_URL.replace('/umd/', '/esm/');
         // when web worker type is `module`.
-        self.createFFmpegCore = (await import(
-        /* webpackIgnore: true */ /* @vite-ignore */ _coreURL)).default;
+        note("importing the engine script");
+        try {
+            self.createFFmpegCore = (await import(
+            /* webpackIgnore: true */ /* @vite-ignore */ _coreURL)).default;
+        }
+        catch (e) {
+            note(`importing the engine script failed: ${e}`);
+            throw e;
+        }
+        note(`engine script imported at ${since()}`);
         if (!self.createFFmpegCore) {
             throw ERROR_IMPORT_FAILURE;
         }
@@ -27,11 +44,21 @@ const load = async ({ coreURL: _coreURL, wasmURL: _wasmURL, workerURL: _workerUR
     const workerURL = _workerURL
         ? _workerURL
         : _coreURL.replace(/.js$/g, ".worker.js");
-    ffmpeg = await self.createFFmpegCore({
-        // Fix `Overload resolution failed.` when using multi-threaded ffmpeg-core.
-        // Encoded wasmURL and workerURL in the URL as a hack to fix locateFile issue.
-        mainScriptUrlOrBlob: `${coreURL}#${btoa(JSON.stringify({ wasmURL, workerURL }))}`,
-    });
+    note("compiling and starting the engine (WebAssembly)");
+    try {
+        ffmpeg = await self.createFFmpegCore({
+            // Fix `Overload resolution failed.` when using multi-threaded ffmpeg-core.
+            // Encoded wasmURL and workerURL in the URL as a hack to fix locateFile issue.
+            mainScriptUrlOrBlob: `${coreURL}#${btoa(JSON.stringify({ wasmURL, workerURL }))}`,
+            // [Reel Maker patch] Messages the engine prints while starting, before setLogger below.
+            logger: ({ type, message }) => note(`core ${type}: ${message}`),
+        });
+    }
+    catch (e) {
+        note(`starting the engine failed: ${e}`);
+        throw e;
+    }
+    note(`engine started at ${since()}`);
     ffmpeg.setLogger((data) => self.postMessage({ type: FFMessageType.LOG, data }));
     ffmpeg.setProgress((data) => self.postMessage({
         type: FFMessageType.PROGRESS,
