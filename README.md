@@ -61,7 +61,7 @@ Long lines wrap onto two lines automatically, and shrink a little if they still 
 - **Speed:** processing takes a while on phones, and long clips can run out of memory. Keep reels to about 30–60 seconds.
 - **Any orientation:** landscape, square, portrait, and tall phone videos are all accepted. Wider sources crop sideways and taller ones crop up and down, and face tracking follows the singer on that axis.
 - **Audio required:** videos with no audio track will fail at the audio step.
-- **Untested in a browser:** the ffmpeg commands were tested natively, and the caption, crop, and fade logic are covered by `npm test`, which runs the generated command through a native ffmpeg. The in-browser pieces (face detection and the ffmpeg.wasm build) have not been run in a real browser yet, so bug reports are welcome.
+- **Testing:** the caption, crop, and fade logic are covered by `npm test`. The full app has been run end to end in headless Chromium, but face tracking has only been tried on test footage without faces, so bug reports are welcome.
 - **Music rights:** covers of copyrighted songs can be muted or taken down on Instagram. Use Instagram's licensed music, original arrangements, or royalty-free tracks for the audio.
 
 ## Files
@@ -72,3 +72,4 @@ Long lines wrap onto two lines automatically, and shrink a little if they still 
 - `app.js`: browser glue: file input, face tracking, the ffmpeg engine, and the download.
 - `fonts/Poppins-Bold.ttf`: caption font (SIL Open Font License).
 - `test/`: tests for `editor.js`.
+- `vendor/`: the ffmpeg.wasm wrapper, served from this site because browsers won't start its worker from a CDN. See `vendor/README.md`.

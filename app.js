@@ -1,6 +1,7 @@
-import { FFmpeg } from "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js";
-import { fetchFile, toBlobURL } from "https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js";
-import { FaceDetector, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
+// ffmpeg.wasm's wrapper starts a Web Worker from its own folder, and browsers only allow workers
+// from the page's own site, so these two packages are served from vendor/ instead of a CDN.
+import { FFmpeg } from "./vendor/ffmpeg/index.js";
+import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
   SAMPLE_STEP,
   FONT_FILE,
@@ -17,6 +18,9 @@ import {
 // Single-threaded ffmpeg core: works on GitHub Pages without special server headers.
 const CORE_BASE = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
 const FONT_URL = "fonts/Poppins-Bold.ttf";
+// Face tracking is loaded only when it's used, so if this CDN is unreachable the rest of the app
+// still works and the crop falls back to the position slider.
+const VISION_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/+esm";
 const WASM_ROOT = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const FACE_MODEL =
   "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite";
@@ -94,6 +98,7 @@ function seekTo(video, time) {
 // Samples the video every SAMPLE_STEP seconds and finds the face in each frame.
 // Returns [{ t, c }] where c is the face centre along the crop axis (0..1), or null.
 async function trackSinger(video, startT, duration, geometry, srcW, srcH) {
+  const { FaceDetector, FilesetResolver } = await import(VISION_URL);
   const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
   const detector = await FaceDetector.createFromOptions(vision, {
     baseOptions: { modelAssetPath: FACE_MODEL, delegate: "CPU" },
@@ -256,7 +261,9 @@ els.go.addEventListener("click", async () => {
     setStatus(`Done! Preview below, then download and upload to Instagram. ${notes.join(" ")}`.trim());
   } catch (err) {
     console.error(err);
-    setStatus(`Something went wrong: ${err.message}. Try a shorter clip or a smaller file.`);
+    const msg = String(err?.message || err).replace(/\.+$/, "");
+    const memory = /memory|out of bounds|abort|exited with code/i.test(msg);
+    setStatus(`Something went wrong: ${msg}.${memory ? " Try a shorter clip or a smaller file." : ""}`);
   } finally {
     for (const name of usedFiles) {
       try {
