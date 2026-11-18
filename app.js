@@ -5,6 +5,7 @@ import { dlog, openPanel } from "./debug.js";
 import { audioFeatures, repetitionCurve, findBestMoments } from "./moments.js";
 import { beatGrid, cutPlan, synthDrums, encodeWav, matchMusic, toGray, frameMotion, movementGrid } from "./beats.js";
 import { colorHistogram, groupFaces, followFace, tileRegions, mergeDetections } from "./faces.js";
+import { chunksToLyrics } from "./lyrics.js";
 import { fetchFile, toBlobURL } from "./vendor/ffmpeg-util/index.js";
 import {
   SAMPLE_STEP,
@@ -1225,3 +1226,98 @@ if (MULTI_THREAD_SUPPORTED) {
 dlog("info", `App ready · engine choice: ${engineChoice()} · fast engine failed recently: ${multiThreadFailedRecently()}`);
 
 els.track.addEventListener("change", startFaceScan);
+
+// ---- Writing lyrics from the singing ----
+const LYRICS_KEY = "reelmaker.lyricsGen";
+const lyricsEls = {
+  button: document.getElementById("lyricsGen"),
+  note: document.getElementById("lyricsGenNote"),
+  lang: document.getElementById("lyricsLang"),
+  model: document.getElementById("lyricsModel"),
+};
+let lyricsWorker = null;
+
+try {
+  const saved = JSON.parse(localStorage.getItem(LYRICS_KEY) || "null");
+  if (saved) {
+    if ([...lyricsEls.lang.options].some((o) => o.value === saved.lang)) lyricsEls.lang.value = saved.lang;
+    if ([...lyricsEls.model.options].some((o) => o.value === saved.model)) lyricsEls.model.value = saved.model;
+  }
+} catch {
+  // ignore
+}
+for (const el of [lyricsEls.lang, lyricsEls.model]) {
+  el.addEventListener("change", () => {
+    try {
+      localStorage.setItem(LYRICS_KEY, JSON.stringify({ lang: lyricsEls.lang.value, model: lyricsEls.model.value }));
+    } catch {
+      // ignore
+    }
+  });
+}
+
+function setLyricsNote(text) {
+  lyricsEls.note.textContent = text;
+  dlog("info", `Lyrics: ${text}`);
+}
+
+lyricsEls.button.addEventListener("click", async () => {
+  if (!inputFile) return setLyricsNote("Choose a video first.");
+  const startT = Math.max(0, parseTime(els.start.value) || 0);
+  let endT = parseTime(els.end.value);
+  const videoDuration = els.preview.duration;
+  if (!Number.isFinite(endT) || endT <= startT) endT = videoDuration;
+  endT = Math.min(endT, videoDuration);
+  const duration = endT - startT;
+  if (!(duration > 1)) return setLyricsNote("Set Start and End around the singing first.");
+  if (els.lyrics.value.trim() && !confirm("Replace the lyrics already in the box?")) return;
+
+  lyricsEls.button.disabled = true;
+  const started = performance.now();
+  let phase = "Getting the sound…";
+  setLyricsNote(phase);
+  const tick = setInterval(() => {
+    if (phase.startsWith("Listening")) {
+      lyricsEls.note.textContent = `${phase} ${clock((performance.now() - started) / 1000)}`;
+    }
+  }, 1000);
+  try {
+    const clip = await performanceSlice(startT, duration);
+    const audio = clip.mono.slice(); // a copy: it's handed over to the worker
+    if (!lyricsWorker) lyricsWorker = new Worker(new URL("./lyrics-worker.js", import.meta.url), { type: "module" });
+    const result = await new Promise((resolve, reject) => {
+      lyricsWorker.onmessage = ({ data }) => {
+        if (data.type === "download") {
+          phase = `Downloading the speech model (first time only)… ${Math.round((100 * data.loaded) / data.total)}%`;
+          lyricsEls.note.textContent = phase;
+        } else if (data.type === "listening") {
+          phase = "Listening to the singing… this takes a while on a phone.";
+          setLyricsNote(phase);
+        } else if (data.type === "done") resolve(data);
+        else if (data.type === "error") reject(new Error(data.message));
+      };
+      lyricsWorker.onerror = (e) => reject(new Error(e.message || "the speech worker failed to load"));
+      lyricsWorker.postMessage({ audio, model: lyricsEls.model.value, language: lyricsEls.lang.value || null }, [audio.buffer]);
+    });
+    dlog("info", `Lyrics: ${result.chunks.length} phrases in ${result.seconds.toFixed(1)} s: ${result.text.slice(0, 200)}`);
+    const lines = chunksToLyrics(result.chunks, startT);
+    if (!lines.length) {
+      setLyricsNote("Couldn't make out any words. Try the Better model, or type the lyrics yourself.");
+      return;
+    }
+    els.lyrics.value = lines.join("\n");
+    els.lyrics.dispatchEvent(new Event("input"));
+    setLyricsNote(
+      `Wrote ${lines.length} line${lines.length === 1 ? "" : "s"} in ${clock((performance.now() - started) / 1000)}. ` +
+        "Please check them: speech recognition often mishears sung words."
+    );
+  } catch (err) {
+    console.warn("Writing lyrics failed", err);
+    setLyricsNote(`Couldn't write the lyrics: ${err.message}.`);
+    if (lyricsWorker) lyricsWorker.terminate();
+    lyricsWorker = null;
+  } finally {
+    clearInterval(tick);
+    lyricsEls.button.disabled = false;
+  }
+});

@@ -189,6 +189,29 @@
         <small>One line per lyric, starting with its time in the original video. Add an end time like <code>0:17-0:20</code> for tighter word timing. Latin alphabet only (e.g. romanized Hindi).</small>
       </label>
       <p id="lyricsWarn" class="warn" hidden></p>
+      <div class="indent lyrics-gen">
+        <div class="row">
+          <label class="field">Language
+            <select id="lyricsLang">
+              <option value="hindi" selected>Hindi</option>
+              <option value="english">English</option>
+              <option value="">Detect</option>
+            </select>
+          </label>
+          <label class="field">Model
+            <select id="lyricsModel">
+              <option value="Xenova/whisper-tiny">Faster</option>
+              <option value="Xenova/whisper-base" selected>Better</option>
+            </select>
+          </label>
+        </div>
+        <button id="lyricsGen" type="button" class="button wide">
+          <span class="spinner dark" aria-hidden="true"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8zM19 14l.9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9zM5 15l.7 1.6L7.3 17l-1.6.7L5 19.3l-.7-1.6L2.7 17l1.6-.7z" /></svg>
+          <span>Write lyrics from the singing</span>
+        </button>
+        <p id="lyricsGenNote" class="help" role="status">Listens to the clip between Start and End and fills in timed lyrics for you to check. Hindi comes out in English letters. Runs on your device; the speech model downloads once (Faster 40 MB, Better 80 MB).</p>
+      </div>
       <label class="field">Caption style
         <select id="captionStyle">
           <option value="pop" selected>Bold pop</option>

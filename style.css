@@ -641,3 +641,14 @@ progress::-moz-progress-bar { background: var(--gradient); border-radius: 999px;
 @media (prefers-reduced-motion: reduce) {
   *, *::before { transition: none !important; animation-duration: 0s !important; }
 }
+
+/* ---- Writing lyrics from the singing ------------------------------------------------------- */
+.lyrics-gen { margin-bottom: 14px; }
+
+.lyrics-gen .field { margin-bottom: 10px; }
+
+.lyrics-gen .button svg { color: var(--accent); font-size: 1.1rem; }
+
+.lyrics-gen .help { margin: 10px 0 0; }
+
+.spinner.dark { border-color: color-mix(in srgb, var(--accent) 30%, transparent); border-top-color: var(--accent); }
