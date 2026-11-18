@@ -3,6 +3,8 @@
 export const SAMPLE_STEP = 0.5; // seconds between face-detection samples
 export const FONT_FILE = "font.ttf"; // name the font is written to inside ffmpeg's file system
 
+const TARGET = 9 / 16; // reel shape: width / height
+
 // "1:23.5" -> 83.5, "83.5" -> 83.5, anything else -> NaN
 export function parseTime(text) {
   const s = String(text).trim();
@@ -43,6 +45,51 @@ export function captionWindows(items, start, duration) {
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const even = (v) => Math.round(v / 2) * 2;
 
+// Works out how to turn any source into a 9:16 window.
+//   source wider than 9:16 (landscape, 4:3, 4:5 ...) -> crop a 9:16 strip across the full height, slide horizontally ("x")
+//   source narrower than 9:16 (very tall phone video) -> crop a 9:16 strip across the full width, slide vertically ("y")
+//   source already 9:16                              -> no crop needed ("none")
+export function cropGeometry(srcW, srcH) {
+  const ratio = srcW / srcH;
+  if (ratio > TARGET + 0.001) {
+    const cropW = Math.min(even(srcH * TARGET), srcW);
+    return { axis: "x", srcW, srcH, cropW, cropH: srcH, size: srcW, window: cropW, maxOffset: srcW - cropW };
+  }
+  if (ratio < TARGET - 0.001) {
+    const cropH = Math.min(even(srcW / TARGET), srcH);
+    return { axis: "y", srcW, srcH, cropW: srcW, cropH, size: srcH, window: cropH, maxOffset: srcH - cropH };
+  }
+  return { axis: "none", srcW, srcH, cropW: srcW, cropH: srcH, size: srcW, window: srcW, maxOffset: 0 };
+}
+
+// Offset (in pixels) of the crop window for a fraction f (0 = start edge, 1 = end edge) of the frame.
+export function offsetFromFraction(geometry, fraction) {
+  const maxEven = Math.floor(geometry.maxOffset / 2) * 2;
+  return clamp(even(geometry.maxOffset * fraction), 0, maxEven);
+}
+
+// samples: [{ t, c }] where c is the subject centre along the crop axis as a 0..1 fraction (or null).
+// Returns [{ t, x }] crop offsets in pixels, or null if the subject was never found.
+export function cropPath(samples, geometry) {
+  const { size, window, maxOffset } = geometry;
+  const maxEven = Math.floor(maxOffset / 2) * 2;
+  const raw = samples.map((s) => (s.c == null ? null : clamp(s.c * size - window / 2, 0, maxOffset)));
+
+  const firstFound = raw.find((v) => v != null);
+  if (firstFound == null) return null;
+
+  // Fill gaps: hold the last known position, starting from the first subject seen.
+  let last = firstFound;
+  const filled = raw.map((v) => {
+    if (v == null) return last;
+    last = v;
+    return v;
+  });
+
+  const smoothed = smooth(filled, 2);
+  return samples.map((s, i) => ({ t: s.t, x: clamp(even(smoothed[i]), 0, maxEven) }));
+}
+
 function smooth(values, radius = 2) {
   return values.map((_, i) => {
     let sum = 0;
@@ -57,31 +104,10 @@ function smooth(values, radius = 2) {
   });
 }
 
-// samples: [{ t, cx }] where cx is the face centre as a 0..1 fraction of frame width (or null).
-// Returns [{ t, x }] crop offsets in pixels, or null if no face was ever found.
-export function cropPath(samples, { srcW, cropW }) {
-  const maxLeft = srcW - cropW;
-  const maxEven = Math.floor(maxLeft / 2) * 2;
-  const raw = samples.map((s) => (s.cx == null ? null : clamp(s.cx * srcW - cropW / 2, 0, maxLeft)));
-
-  const firstFound = raw.find((v) => v != null);
-  if (firstFound == null) return null;
-
-  // Fill gaps: hold the last known position, starting from the first face seen.
-  let last = firstFound;
-  const filled = raw.map((v) => {
-    if (v == null) return last;
-    last = v;
-    return v;
-  });
-
-  const smoothed = smooth(filled, 2);
-  return samples.map((s, i) => ({ t: s.t, x: clamp(even(smoothed[i]), 0, maxEven) }));
-}
-
-// Text for ffmpeg's sendcmd filter: "time crop x value;" per line.
-export function trackFileText(keys) {
-  return keys.map((k) => `${k.t.toFixed(2)} crop x ${k.x};`).join("\n") + "\n";
+// Text for ffmpeg's sendcmd filter: "time crop x value;" (or "crop y") per line.
+export function trackFileText(keys, axis) {
+  const param = axis === "y" ? "y" : "x";
+  return keys.map((k) => `${k.t.toFixed(2)} crop ${param} ${k.x};`).join("\n") + "\n";
 }
 
 function drawText({ textFile, size, y, a, b }) {
@@ -97,8 +123,8 @@ export function buildCommand({
   inputName,
   start,
   duration,
-  cropW,
-  staticX,
+  geometry,
+  staticOffset,
   hasTrack,
   captions,
   title,
@@ -107,8 +133,15 @@ export function buildCommand({
   const textFiles = [];
   const v = [];
 
-  if (hasTrack) v.push("sendcmd=f=track.txt");
-  v.push(`crop=w=${cropW}:h=ih:x=${staticX}:y=0`);
+  if (geometry.axis !== "none") {
+    if (hasTrack) v.push("sendcmd=f=track.txt");
+    const { cropW, cropH } = geometry;
+    v.push(
+      geometry.axis === "x"
+        ? `crop=w=${cropW}:h=${cropH}:x=${staticOffset}:y=0`
+        : `crop=w=${cropW}:h=${cropH}:x=0:y=${staticOffset}`
+    );
+  }
   v.push("scale=1080:1920");
 
   if (grade) {

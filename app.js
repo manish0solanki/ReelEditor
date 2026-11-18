@@ -7,6 +7,8 @@ import {
   parseTime,
   parseLyrics,
   captionWindows,
+  cropGeometry,
+  offsetFromFraction,
   cropPath,
   trackFileText,
   buildCommand,
@@ -90,14 +92,15 @@ function seekTo(video, time) {
 }
 
 // Samples the video every SAMPLE_STEP seconds and finds the face in each frame.
-async function trackSinger(video, startT, duration, srcW, srcH) {
+// Returns [{ t, c }] where c is the face centre along the crop axis (0..1), or null.
+async function trackSinger(video, startT, duration, geometry, srcW, srcH) {
   const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
   const detector = await FaceDetector.createFromOptions(vision, {
     baseOptions: { modelAssetPath: FACE_MODEL, delegate: "CPU" },
     runningMode: "IMAGE",
   });
 
-  const scale = Math.min(1, 480 / srcW);
+  const scale = Math.min(1, 480 / Math.max(srcW, srcH));
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(srcW * scale);
   canvas.height = Math.round(srcH * scale);
@@ -114,8 +117,14 @@ async function trackSinger(video, startT, duration, srcW, srcH) {
       const { detections = [] } = detector.detect(canvas);
       const area = (d) => d.boundingBox.width * d.boundingBox.height;
       const best = detections.reduce((a, d) => (!a || area(d) > area(a) ? d : a), null);
-      const cx = best ? (best.boundingBox.originX + best.boundingBox.width / 2) / canvas.width : null;
-      samples.push({ t, cx });
+      let c = null;
+      if (best) {
+        const bb = best.boundingBox;
+        const cx = (bb.originX + bb.width / 2) / canvas.width;
+        const cy = (bb.originY + bb.height / 2) / canvas.height;
+        c = geometry.axis === "y" ? cy : cx;
+      }
+      samples.push({ t, c });
       if (i % 10 === 0) setStatus(`Finding the singer… ${Math.round((100 * i) / count)}%`);
     }
   } finally {
@@ -166,7 +175,8 @@ els.go.addEventListener("click", async () => {
   const videoDuration = els.preview.duration;
   const srcW = els.preview.videoWidth;
   const srcH = els.preview.videoHeight;
-  if (srcW <= srcH) return showError("This tool needs a landscape video (wider than tall).");
+  if (!srcW || !srcH) return showError("Couldn't read this video's size. Try a different file.");
+  const geometry = cropGeometry(srcW, srcH);
 
   const startT = parseTime(els.start.value);
   let endT = parseTime(els.end.value);
@@ -177,10 +187,7 @@ els.go.addEventListener("click", async () => {
     return showError(`End must be after start, with at least ${MIN_DURATION} seconds between them.`);
   }
 
-  // Crop geometry: a 9:16 window across the full height.
-  const cropW = Math.round((srcH * 9) / 16 / 2) * 2;
-  const maxLeft = srcW - cropW;
-  const staticX = Math.round((maxLeft * Number(els.pos.value)) / 100 / 2) * 2;
+  const fallbackOffset = offsetFromFraction(geometry, Number(els.pos.value) / 100);
 
   const { items, bad } = parseLyrics(els.lyrics.value);
   const captions = captionWindows(items, startT, duration);
@@ -195,11 +202,11 @@ els.go.addEventListener("click", async () => {
 
   try {
     let keys = null;
-    if (els.track.checked) {
+    if (els.track.checked && geometry.axis !== "none") {
       try {
         setStatus("Finding the singer…");
-        const samples = await trackSinger(els.preview, startT, duration, srcW, srcH);
-        keys = cropPath(samples, { srcW, cropW });
+        const samples = await trackSinger(els.preview, startT, duration, geometry, srcW, srcH);
+        keys = cropPath(samples, geometry);
         if (!keys) setStatus("No face found, so the crop uses the fallback position.");
       } catch (err) {
         console.warn("Face tracking failed", err);
@@ -214,8 +221,8 @@ els.go.addEventListener("click", async () => {
       inputName,
       start: startT,
       duration,
-      cropW,
-      staticX: keys ? keys[0].x : staticX,
+      geometry,
+      staticOffset: keys ? keys[0].x : fallbackOffset,
       hasTrack: !!keys,
       captions,
       title: els.title.value.trim(),
@@ -224,7 +231,7 @@ els.go.addEventListener("click", async () => {
 
     await ffmpeg.writeFile(inputName, await fetchFile(inputFile));
     await ffmpeg.writeFile(FONT_FILE, await loadFont());
-    if (keys) await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys)));
+    if (keys) await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys, geometry.axis)));
     for (const f of textFiles) {
       usedFiles.push(f.name);
       await ffmpeg.writeFile(f.name, new TextEncoder().encode(f.text + "\n"));

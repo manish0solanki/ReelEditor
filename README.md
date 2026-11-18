@@ -4,6 +4,7 @@ A webpage that turns a landscape performance video into a polished vertical 1080
 
 ## What it does
 
+- **Any orientation:** landscape, portrait, and tall phone videos all work.
 - **Trim** to a start and end time (accepts `1:23` or `83`).
 - **Keeps the singer centered** by detecting the face in frames sampled every half second, then smoothing the crop path so it doesn't jitter. If no face is found, it uses the fallback position slider.
 - **Lyric captions** timed to the original video. Each line stays on screen until the next line starts.
@@ -46,7 +47,7 @@ Times are measured from the start of the original video, not from the trimmed cl
 - **Language:** captions use the bundled Poppins font, which covers the Latin alphabet. Hindi and other scripts need a font file that includes them, placed in `fonts/` and named in `app.js`. Romanized lyrics work now.
 - **Face tracking** uses MediaPipe's face detector, loaded from the internet the first time. It works best when the singer's face is clearly visible and reasonably large.
 - **Speed:** processing takes a while on phones, and long clips can run out of memory. Keep reels to about 30–60 seconds.
-- **Landscape only:** the crop assumes the source is wider than tall.
+- **Any orientation:** landscape, square, portrait, and tall phone videos are all accepted. Wider sources crop sideways and taller ones crop up and down, and face tracking follows the singer on that axis.
 - **Audio required:** videos with no audio track will fail at the audio step.
 - **Untested in a browser:** the ffmpeg commands were tested natively, and the caption, crop, and fade logic were tested with the same generator. The in-browser pieces (face detection and the ffmpeg.wasm build) have not been run in a real browser yet, so bug reports are welcome.
 - **Music rights:** covers of copyrighted songs can be muted or taken down on Instagram. Use Instagram's licensed music, original arrangements, or royalty-free tracks for the audio.
