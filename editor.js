@@ -383,3 +383,28 @@ export function formatTime(seconds) {
   const text = s.toFixed(1).replace(/\.0$/, "");
   return `${m}:${s < 10 ? "0" : ""}${text}`;
 }
+
+// ---- Render timer ------------------------------------------------------------------------------
+
+// ffmpeg's log line "frame=  120 fps= 12 ... time=00:00:05.12 ..." -> 5.12 (seconds of reel encoded).
+export function parseEncodedTime(line) {
+  const m = /time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(line);
+  return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null;
+}
+
+// Seconds left to encode, or null when there's nothing to go on yet.
+//   total, encoded: seconds of reel; encodeElapsed: wall-clock seconds spent encoding so far;
+//   savedRate: wall-clock seconds per reel second from the last reel on this device (optional).
+// The live rate takes over from the saved one as encoding gets going (fully by a quarter of the way).
+export function estimateRemaining({ total, encoded, encodeElapsed, savedRate = null }) {
+  const left = Math.max(0, total - encoded);
+  let rate = encoded >= 0.5 && encodeElapsed >= 3 ? encodeElapsed / encoded : null;
+  if (savedRate > 0) {
+    if (rate == null) rate = savedRate;
+    else {
+      const w = Math.min(1, encoded / (0.25 * total));
+      rate = w * rate + (1 - w) * savedRate;
+    }
+  }
+  return rate == null ? null : left * rate;
+}

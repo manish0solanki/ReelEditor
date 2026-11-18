@@ -11,6 +11,7 @@ A webpage that turns a landscape performance video into a polished vertical 1080
 - **Title** shown over the first few seconds.
 - **Color and sharpness boost** (optional).
 - **Fades** in from and out to black.
+- **Timer while it builds:** shows time elapsed and about how long is left, then the total when it's done. It remembers how fast your device was, so later reels get an estimate straight away.
 - **Vocal-friendly audio**: fades, light compression, and loudness normalization to about −14 LUFS, the level most platforms expect.
 
 ## Run it locally

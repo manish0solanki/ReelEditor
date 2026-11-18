@@ -17,6 +17,8 @@ import {
   summarizeScores,
   findSongBounds,
   formatTime,
+  parseEncodedTime,
+  estimateRemaining,
 } from "./editor.js";
 
 // Single-threaded ffmpeg core: works on GitHub Pages without special server headers.
@@ -54,6 +56,7 @@ const els = {
   go: $("go"),
   output: $("output"),
   progress: $("progress"),
+  timer: $("timer"),
   status: $("status"),
   result: $("result"),
   download: $("download"),
@@ -66,8 +69,82 @@ let inputFile = null;
 let inputName = "input.mp4";
 let downloadUrl = null;
 
-ffmpeg.on("progress", ({ progress }) => {
-  els.progress.value = Math.min(1, Math.max(0, progress));
+// ---- Timer shown while a reel is being built ----
+// Progress comes from ffmpeg's "time=" log lines, which are steadier than its progress event.
+const RATE_KEY = "reelmaker.encodeRate"; // wall-clock seconds per reel second, from the last reel
+const PAGE_TITLE = document.title;
+const timer = { id: null, t0: 0, encodeT0: 0, total: 0, encoded: 0, encoding: false };
+
+function readSavedRate() {
+  try {
+    const v = Number(localStorage.getItem(RATE_KEY));
+    return v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+const clock = (seconds) => formatTime(Math.max(0, Math.round(seconds)));
+
+function renderTimer() {
+  const elapsed = (performance.now() - timer.t0) / 1000;
+  const left = timer.encoding
+    ? estimateRemaining({
+        total: timer.total,
+        encoded: timer.encoded,
+        encodeElapsed: (performance.now() - timer.encodeT0) / 1000,
+        savedRate: readSavedRate(),
+      })
+    : (() => {
+        const rate = readSavedRate();
+        return rate ? rate * timer.total : null;
+      })();
+  let text = `Elapsed ${clock(elapsed)}`;
+  // Under 5 s left is shown as "almost done" rather than a countdown that might stall at 0:01.
+  if (left != null) text += left < 5 ? " · almost done" : ` · about ${clock(left)} left`;
+  els.timer.textContent = text;
+  const pct = timer.encoding && timer.total ? Math.floor((100 * timer.encoded) / timer.total) : null;
+  document.title = pct != null ? `${pct}% · ${PAGE_TITLE}` : `Working… · ${PAGE_TITLE}`;
+}
+
+function startTimer(total) {
+  Object.assign(timer, { t0: performance.now(), total, encoded: 0, encoding: false });
+  els.timer.hidden = false;
+  renderTimer();
+  clearInterval(timer.id);
+  timer.id = setInterval(renderTimer, 1000);
+}
+
+function startEncodingTimer() {
+  timer.encoding = true;
+  timer.encodeT0 = performance.now();
+  timer.encoded = 0;
+  renderTimer();
+}
+
+function stopTimer(ok) {
+  clearInterval(timer.id);
+  timer.id = null;
+  const elapsed = (performance.now() - timer.t0) / 1000;
+  if (ok && timer.encoding && timer.total > 0) {
+    const rate = (performance.now() - timer.encodeT0) / 1000 / timer.total;
+    try {
+      localStorage.setItem(RATE_KEY, String(rate));
+    } catch {
+      // storage unavailable: the next estimate just starts later
+    }
+  }
+  timer.encoding = false;
+  els.timer.textContent = ok ? `Finished in ${clock(elapsed)}` : `Stopped after ${clock(elapsed)}`;
+  document.title = ok ? `Done · ${PAGE_TITLE}` : PAGE_TITLE;
+}
+
+ffmpeg.on("log", ({ message }) => {
+  if (!timer.encoding) return;
+  const t = parseEncodedTime(message);
+  if (t == null) return;
+  timer.encoded = Math.min(timer.total, t);
+  els.progress.value = timer.total ? timer.encoded / timer.total : 0;
 });
 
 function setStatus(text) {
@@ -316,6 +393,8 @@ els.go.addEventListener("click", async () => {
   els.result.hidden = true;
   els.download.hidden = true;
   els.progress.value = 0;
+  startTimer(duration);
+  let ok = false;
 
   const usedFiles = [inputName, FONT_FILE, "track.txt", "output.mp4"];
 
@@ -356,6 +435,7 @@ els.go.addEventListener("click", async () => {
       await ffmpeg.writeFile(f.name, new TextEncoder().encode(f.text));
     }
 
+    startEncodingTimer();
     const exitCode = await ffmpeg.exec(args);
     if (exitCode !== 0) throw new Error(`ffmpeg exited with code ${exitCode}`);
 
@@ -369,6 +449,7 @@ els.go.addEventListener("click", async () => {
     els.download.href = downloadUrl;
     els.download.hidden = false;
     els.progress.value = 1;
+    ok = true;
 
     const notes = [];
     if (bad.length) notes.push(`${bad.length} lyric line(s) were skipped.`);
@@ -379,6 +460,7 @@ els.go.addEventListener("click", async () => {
     const memory = /memory|out of bounds|abort|exited with code/i.test(msg);
     setStatus(`Something went wrong: ${msg}.${memory ? " Try a shorter clip or a smaller file." : ""}`);
   } finally {
+    stopTimer(ok);
     for (const name of usedFiles) {
       try {
         await ffmpeg.deleteFile(name);

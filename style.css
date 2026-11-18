@@ -89,6 +89,13 @@ button:disabled { background: #a7a7b0; cursor: wait; }
 
 progress { width: 100%; }
 
+.timer {
+  margin: 6px 0 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #5a5a60;
+}
+
 #status { margin: 12px 0 0; }
 
 h2 { margin: 0 0 12px; font-size: 1.1rem; }
