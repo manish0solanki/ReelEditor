@@ -78,7 +78,9 @@ async function loadFont() {
     const res = await fetch(FONT_URL);
     fontBytes = new Uint8Array(await res.arrayBuffer());
   }
-  return fontBytes;
+  // ffmpeg.writeFile hands the buffer over to its worker, which empties it on this side.
+  // Return a copy so the cached font is still there for the next reel.
+  return fontBytes.slice();
 }
 
 function seekTo(video, time) {
