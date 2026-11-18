@@ -97,6 +97,9 @@ const els = {
   voiceVolLabel: $("voiceVolLabel"),
   voiceVolRow: $("voiceVolRow"),
   beatCuts: $("beatCuts"),
+  transition: $("transition"),
+  transitionRow: $("transitionRow"),
+  transitionHelp: $("transitionHelp"),
   matchSource: $("matchSource"),
   matchRow: $("matchRow"),
   go: $("go"),
@@ -984,23 +987,42 @@ async function prepareSound(startT, duration) {
 
   if (cuts) {
     result.closeups = cutPlan(grid || { confidence: 0 }, duration);
+    // The beats in reel time, for the "Beat bounce" transition (a steady 100 BPM without a clear beat).
+    if (grid && grid.confidence >= MIN_BEAT && grid.beats.length >= 4) {
+      result.beats = grid.beats;
+      result.downbeats = grid.downbeats;
+    } else {
+      result.beats = [];
+      for (let t = 0.3; t < duration; t += 0.6) result.beats.push(t);
+      result.downbeats = result.beats.filter((_, i) => i % 4 === 0);
+    }
     if (!grid || grid.confidence < 0.15) result.notes.push("No clear beat found, so the shots change every 3 seconds.");
     dlog("info", `Beat cuts: ${result.closeups.length} close-ups: ${result.closeups.map((c) => `${c.a.toFixed(1)}-${c.b.toFixed(1)}`).join(", ")}`);
   }
   return result;
 }
 
+const TRANSITION_HELP = {
+  smooth: "Eases in to a close-up and back out, about every 4 seconds, on the bar lines.",
+  punch: "Snaps in to a close-up right on the bar line and back out: fast and energetic.",
+  bounce: "No shot changes: the picture pulses with the music, a little on every beat and more on beat 1.",
+  drift: "Slowly zooms in through one shot and out through the next. Always moving, never sudden.",
+  flash: "The smooth zoom with a quick white flash at each change.",
+};
+
 function updateSoundOptions() {
   const music = els.music.value;
   els.musicFileRow.hidden = music !== "file";
   els.matchRow.hidden = music !== "file";
+  els.transitionRow.hidden = !els.beatCuts.checked;
+  els.transitionHelp.textContent = TRANSITION_HELP[els.transition.value] || "";
   els.musicVolRow.hidden = music === "none";
   els.musicVolLabel.textContent = els.musicVol.value;
   els.voiceVolLabel.textContent = els.voiceVol.value;
   try {
     localStorage.setItem(
       SOUND_KEY,
-      JSON.stringify({ noise: els.noise.value, music, musicVol: els.musicVol.value, voiceVol: els.voiceVol.value, cuts: els.beatCuts.checked, matchSource: els.matchSource.value })
+      JSON.stringify({ noise: els.noise.value, music, musicVol: els.musicVol.value, voiceVol: els.voiceVol.value, cuts: els.beatCuts.checked, matchSource: els.matchSource.value, transition: els.transition.value })
     );
   } catch {
     // ignore
@@ -1017,12 +1039,13 @@ try {
     if (saved.voiceVol) els.voiceVol.value = saved.voiceVol;
     els.beatCuts.checked = !!saved.cuts;
     if (["auto", "sound", "movement", "off"].includes(saved.matchSource)) els.matchSource.value = saved.matchSource;
+    if ([...els.transition.options].some((o) => o.value === saved.transition)) els.transition.value = saved.transition;
     else if (saved.match === false) els.matchSource.value = "off"; // the earlier checkbox
   }
 } catch {
   // ignore
 }
-for (const el of [els.noise, els.music, els.musicVol, els.voiceVol, els.beatCuts, els.matchSource]) {
+for (const el of [els.noise, els.music, els.musicVol, els.voiceVol, els.beatCuts, els.matchSource, els.transition]) {
   el.addEventListener(el.type === "range" ? "input" : "change", updateSoundOptions);
 }
 els.musicFile.addEventListener("change", () => {
@@ -1117,6 +1140,9 @@ els.go.addEventListener("click", async () => {
       // Everything about the music except its bytes (which are written to a file separately).
       music: sound.music && (({ bytes, ...rest }) => rest)(sound.music),
       closeups: sound.closeups,
+      transition: els.transition.value,
+      beats: sound.beats || [],
+      downbeats: sound.downbeats || [],
     });
     for (const f of textFiles) usedFiles.push(f.name);
 

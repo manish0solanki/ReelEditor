@@ -166,16 +166,75 @@ export function zoomFocus(geometry) {
   return { fx: 0.5, fy: geometry.axis === "y" ? 0.5 : 0.3 };
 }
 
-// The zoom level at time `it` as an ffmpeg expression: 1 normally, CLOSEUP_ZOOM during close-ups,
-// with smoothstep (ease in and out) moves of ZOOM_MOVE seconds centred on each change.
-export function zoomExpression(closeups, { zoom = CLOSEUP_ZOOM, move = ZOOM_MOVE } = {}) {
-  const ease = (at) => {
-    const t0 = (at - move / 2).toFixed(3);
+// The zoom level at time `it` as an ffmpeg expression: 1 normally, `zoom` during close-ups, with
+// eased moves of `move` seconds at each change.
+//   align "center": the move is centred on the change (smooth); "start": it starts on it (punch).
+//   ease "inout": smoothstep, gentle at both ends; "out": cubic ease-out, fast then settling.
+export function zoomExpression(closeups, { zoom = CLOSEUP_ZOOM, move = ZOOM_MOVE, align = "center", ease = "inout" } = {}) {
+  const step = (at) => {
+    const t0 = (align === "center" ? at - move / 2 : at).toFixed(3);
     const c = `clip((it-${t0})/${move},0,1)`;
-    return `${c}*${c}*(3-2*${c})`;
+    return ease === "out" ? `(1-pow(1-${c},3))` : `${c}*${c}*(3-2*${c})`;
   };
-  const sum = closeups.map((c) => `${ease(c.a)}-${ease(c.b)}`).join("+");
+  const sum = closeups.map((c) => `${step(c.a)}-${step(c.b)}`).join("+");
   return `1+${(zoom - 1).toFixed(3)}*(${sum || "0"})`;
+}
+
+// ---- Transition styles -------------------------------------------------------------------------
+// All of them are zoompan zoom levels as functions of the input time `it` (plus, for "flash", an eq
+// brightness that is a function of `t`), so every move is computed per frame and can't stutter.
+
+export const TRANSITIONS = ["smooth", "punch", "bounce", "drift", "flash"];
+
+// A short pulse at each time: jumps up at the time, decays over `decay` seconds.
+function pulses(times, amp, decay, variable = "it") {
+  return times.map((b) => `if(gte(${variable},${b.toFixed(3)}),${amp}*exp(-(${variable}-${b.toFixed(3)})/${decay}),0)`).join("+");
+}
+
+// Beat bounce: a small zoom pulse on every beat, a bigger one on beat 1 of each bar.
+export function bounceExpression(beats, downbeats, duration) {
+  const down = new Set(downbeats.map((d) => d.toFixed(3)));
+  const inReel = beats.filter((b) => b >= 0 && b < duration);
+  const big = inReel.filter((b) => down.has(b.toFixed(3)));
+  const small = inReel.filter((b) => !down.has(b.toFixed(3)));
+  const parts = [pulses(big, 0.08, 0.18), pulses(small, 0.035, 0.15)].filter(Boolean);
+  return `1+${parts.join("+") || "0"}`;
+}
+
+// Slow drift: zooms in slowly through one shot and out through the next (eased), so the picture is
+// always gently moving and never jumps. edges: shot boundaries, from 0 to the reel's end.
+export function driftExpression(edges, { zoom = 1.15 } = {}) {
+  const terms = [];
+  for (let i = 0; i + 1 < edges.length; i++) {
+    const a = edges[i];
+    const len = Math.max(0.1, edges[i + 1] - a);
+    const dir = i % 2 === 0 ? 1 : -1; // in, out, in, ...
+    const c = `clip((it-${a.toFixed(3)})/${len.toFixed(3)},0,1)`;
+    terms.push(`${dir}*${c}*${c}*(3-2*${c})`);
+  }
+  return `1+${(zoom - 1).toFixed(3)}*(${terms.join("+") || "0"})`;
+}
+
+// Zoom + flash: a quick white flash (eq brightness) at each change, peaking on it.
+export function flashExpression(changes) {
+  return pulses(changes, 0.45, 0.09, "t") || "0";
+}
+
+// The zoompan zoom (and optional flash) for a style. Returns { zoom, flash } (flash may be null).
+export function transitionMotion(style, { closeups = [], beats = [], downbeats = [], duration }) {
+  const edges = [0, ...closeups.flatMap((c) => [c.a, c.b]), duration];
+  switch (style) {
+    case "punch":
+      return { zoom: zoomExpression(closeups, { zoom: 1.3, move: 0.15, align: "start", ease: "out" }), flash: null };
+    case "bounce":
+      return { zoom: bounceExpression(beats, downbeats, duration), flash: null };
+    case "drift":
+      return { zoom: driftExpression(edges), flash: null };
+    case "flash":
+      return { zoom: zoomExpression(closeups), flash: flashExpression(closeups.flatMap((c) => [c.a, c.b])) };
+    default:
+      return { zoom: zoomExpression(closeups), flash: null };
+  }
 }
 
 // Text for ffmpeg's sendcmd filter. At each key the crop offset becomes an expression of time that
@@ -318,6 +377,9 @@ export function buildCommand({
   voiceVolume = 1, // the clip's own sound, 0 (muted) to 1
   music = null, // { name, volume (0-1), duck: "strong" | "light", tempo?, start? } to mix in a music file
   closeups = [], // [{ a, b }]: stretches shown as a close-up (beat cuts)
+  transition = "smooth", // one of TRANSITIONS
+  beats = [], // reel-time beats and bar lines, for the "bounce" style
+  downbeats = [],
 }) {
   const textFiles = [];
   const v = [];
@@ -328,9 +390,12 @@ export function buildCommand({
   // stretch the picture by the tiny difference.
   const toFrame = [`scale=${FRAME_W}:${FRAME_H}`, "setsar=1"];
 
-  if (closeups.length) {
-    // Beat cuts: one tracked crop, then zoompan eases in to the close-ups and back out (it also scales
-    // to 1080x1920, from the cropped picture's own pixels). fps first: zoompan works frame by frame.
+  const motion = closeups.length || (transition === "bounce" && beats.length)
+    ? transitionMotion(transition, { closeups, beats, downbeats, duration })
+    : null;
+  if (motion) {
+    // Beat cuts: one tracked crop, then zoompan moves the zoom as the transition style says (it also
+    // scales to 1080x1920, from the cropped picture's own pixels). fps first: zoompan works frame by frame.
     if (geometry.axis !== "none") {
       if (hasTrack) v.push("sendcmd=f=track.txt");
       v.push(
@@ -343,9 +408,10 @@ export function buildCommand({
     v.push(
       ...gradeFilters,
       `fps=${CUT_FPS}`,
-      `zoompan=z='${zoomExpression(closeups)}':x='(iw-iw/zoom)*${fx}':y='(ih-ih/zoom)*${fy}':d=1:s=${FRAME_W}x${FRAME_H}:fps=${CUT_FPS}`,
+      `zoompan=z='${motion.zoom}':x='(iw-iw/zoom)*${fx}':y='(ih-ih/zoom)*${fy}':d=1:s=${FRAME_W}x${FRAME_H}:fps=${CUT_FPS}`,
       "setsar=1"
     );
+    if (motion.flash) v.push(`eq=eval=frame:brightness='${motion.flash}'`);
   } else {
     if (geometry.axis !== "none") {
       if (hasTrack) v.push("sendcmd=f=track.txt");

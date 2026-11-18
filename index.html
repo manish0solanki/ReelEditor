@@ -169,6 +169,18 @@
         <input id="beatCuts" type="checkbox" />
         <span class="check-text">Cut to the beat<small>Switches between a wide shot and a close-up on the bars</small></span>
       </label>
+      <div id="transitionRow" class="indent" hidden>
+        <label class="field">Transition
+          <select id="transition">
+            <option value="smooth" selected>Smooth zoom</option>
+            <option value="punch">Punch zoom</option>
+            <option value="bounce">Beat bounce</option>
+            <option value="drift">Slow drift</option>
+            <option value="flash">Zoom + flash</option>
+          </select>
+          <small id="transitionHelp"></small>
+        </label>
+      </div>
     </section>
 
     <!-- 5. Captions -->
