@@ -158,14 +158,17 @@ export function beatGrid(samples, sampleRate) {
 
 // ---- Beat-synced cuts --------------------------------------------------------------------------
 
-// Alternates wide and close-up shots, cutting on bar lines. Each shot lasts a whole number of bars,
-// about 2-4 s. Without a usable beat it cuts every ~3 s instead.
+// Alternates wide and close-up shots, changing on bar lines. Each shot lasts a whole number of bars,
+// about 4 s (at least 2 s; shorter in a short clip, so it still gets a close-up). Without a usable
+// beat it changes every 4 s instead.
 // Returns the close-up stretches: [{ a, b }] in seconds.
-export function cutPlan({ beats = [], downbeats = [], confidence = 0 }, duration, { target = 3, minShot = 1.5 } = {}) {
+export function cutPlan({ beats = [], downbeats = [], confidence = 0 }, duration, { target = 4, minShot = 2 } = {}) {
   let marks;
   if (confidence >= 0.15 && downbeats.length >= 2) {
     const bar = (downbeats[downbeats.length - 1] - downbeats[0]) / (downbeats.length - 1);
-    const barsPerShot = Math.max(1, Math.round(target / bar));
+    let barsPerShot = Math.max(1, Math.round(target / bar));
+    // A short clip needs at least 3 shots (wide, close, wide) for a close-up to happen at all.
+    while (barsPerShot > 1 && duration / (bar * barsPerShot) < 3) barsPerShot--;
     marks = downbeats.filter((_, i) => i % barsPerShot === 0);
   } else if (confidence >= 0.15 && beats.length >= 8) {
     const beat = (beats[beats.length - 1] - beats[0]) / (beats.length - 1);

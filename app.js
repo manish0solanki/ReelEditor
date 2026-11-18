@@ -25,7 +25,6 @@ import {
   singingFlags,
   noiseFloor,
   loudnessDb,
-  cutTrackTargets,
   formatTime,
   parseEncodedTime,
   estimateRemaining,
@@ -1132,8 +1131,7 @@ els.go.addEventListener("click", async () => {
       }
       await ffmpeg.writeFile(FONT_FILE, await loadFont());
       if (keys) {
-        const targets = sound.closeups.length ? cutTrackTargets(geometry) : undefined;
-        await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys, geometry.axis, targets)));
+        await ffmpeg.writeFile("track.txt", new TextEncoder().encode(trackFileText(keys, geometry.axis)));
       }
       // A copy each time: writeFile hands the buffer over, and a retry would need it again.
       if (sound.music) await ffmpeg.writeFile(sound.music.name, sound.music.bytes.slice());

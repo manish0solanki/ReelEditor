@@ -51,22 +51,22 @@ test("beatGrid on silence has no confidence", () => {
   assert.ok(g.confidence < 0.15, String(g.confidence));
 });
 
-test("cutPlan alternates on bar lines, keeps the first and last shots wide, shots 1.5-5 s", () => {
+test("cutPlan alternates on bar lines, keeps the first and last shots wide, shots 2-7 s", () => {
   const g = beatGrid(clicks({ bpm: 100, seconds: 30, offset: 0.37 }), SR);
   const close = cutPlan(g, 30);
-  assert.ok(close.length >= 4, JSON.stringify(close));
+  assert.ok(close.length >= 2, JSON.stringify(close));
   const onDownbeat = (t) => g.downbeats.some((d) => Math.abs(d - t) < 0.01);
   for (const c of close) {
     assert.ok(onDownbeat(c.a) && onDownbeat(c.b), JSON.stringify(c));
-    assert.ok(c.b - c.a >= 1.5 && c.b - c.a <= 5, JSON.stringify(c));
+    assert.ok(c.b - c.a >= 2 && c.b - c.a <= 7, JSON.stringify(c));
     assert.ok(c.a > 0 && c.b < 30);
   }
   for (let i = 1; i < close.length; i++) assert.ok(close[i].a > close[i - 1].b, "a wide shot between close-ups");
 });
 
-test("cutPlan without a clear beat cuts every ~3 s", () => {
+test("cutPlan without a clear beat changes shot every 4 s", () => {
   const close = cutPlan({ beats: [], downbeats: [], confidence: 0 }, 20);
-  assert.deepEqual(close, [{ a: 3, b: 6 }, { a: 9, b: 12 }, { a: 15, b: 18 }]);
+  assert.deepEqual(close, [{ a: 4, b: 8 }, { a: 12, b: 16 }]);
 });
 
 test("synthDrums: hits land on the beats, kick on 1 and 3", () => {
@@ -155,4 +155,11 @@ test("matchMusic works the same with a beat from movement", async () => {
   assert.ok(m.ok, m.reason);
   assert.ok(Math.abs(m.tempo - 100 / 94) < 0.02, String(m.tempo));
   assert.ok(m.fraction > 0.8, String(m.fraction));
+});
+
+test("cutPlan: a short clip still gets a close-up (shorter shots)", () => {
+  const g = beatGrid(clicks({ bpm: 100, seconds: 12, offset: 0.37 }), SR);
+  const close = cutPlan(g, 12);
+  assert.ok(close.length >= 1, JSON.stringify(close));
+  for (const c of close) assert.ok(c.b - c.a >= 2, JSON.stringify(c));
 });

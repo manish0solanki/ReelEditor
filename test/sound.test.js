@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildCommand, cropGeometry, noiseFilters, noiseFloor, loudnessDb, closeupGeometry, cutTrackTargets, trackFileText,
+  buildCommand, cropGeometry, noiseFilters, noiseFloor, loudnessDb, zoomExpression, zoomFocus, CLOSEUP_ZOOM,
 } from "../editor.js";
 
 const base = {
@@ -58,32 +58,34 @@ test("buildCommand: music is a second, looped input, ducked under the performanc
   assert.equal(arg(args, "-t"), "20"); // the reel stops at its length even though the music loops
 });
 
-test("closeupGeometry: 1/1.3 of the crop, centred along the tracking axis, headroom across it", () => {
-  const g = cropGeometry(1920, 1080); // crop 608x1080, tracking along x
-  const c = closeupGeometry(g);
-  assert.equal(c.w, 468);
-  assert.equal(c.h, 830);
-  assert.equal(c.dx, 70); // (608 - 468) / 2
-  assert.equal(c.dy, 76); // (1080 - 830) * 0.3, even
-  const tall = closeupGeometry(cropGeometry(1080, 2400)); // tracking along y
-  assert.equal(tall.dy, (1920 - tall.h) / 2);
-  for (const v of Object.values(c)) assert.equal(v % 2, 0);
+test("zoomExpression: eases to the close-up and back, each move centred on its change", () => {
+  const expr = zoomExpression([{ a: 4, b: 8 }]);
+  // Evaluate the ffmpeg expression in JS (clip -> clamp) to check its shape.
+  const at = (t) => Function("it", "clip", `return ${expr};`)(t, (x, lo, hi) => Math.min(hi, Math.max(lo, x)));
+  assert.equal(at(0), 1);
+  assert.equal(at(3.6), 1); // the move starts 0.3 s before the bar line...
+  assert.ok(Math.abs(at(4) - (1 + (CLOSEUP_ZOOM - 1) / 2)) < 1e-9); // ...is halfway on it...
+  assert.ok(Math.abs(at(4.3) - CLOSEUP_ZOOM) < 1e-9); // ...and done 0.3 s after
+  assert.ok(Math.abs(at(6) - CLOSEUP_ZOOM) < 1e-9);
+  assert.equal(at(8.4), 1);
+  // Smooth: no step bigger than the steepest point of the ease over one 30 fps frame.
+  let last = at(3);
+  for (let t = 3; t < 9; t += 1 / 30) {
+    const z = at(t);
+    assert.ok(Math.abs(z - last) <= 0.25 * 1.5 / 0.6 / 30 + 1e-9, `jump at ${t}`);
+    last = z;
+  }
+  assert.equal(zoomExpression([]), "1+0.250*(0)");
 });
 
-test("buildCommand: beat cuts split into a wide and a close-up shot, switched at the given times", () => {
+test("buildCommand: beat cuts are one tracked crop and a smooth zoompan at 30 fps", () => {
   const closeups = [{ a: 2.4, b: 4.8 }, { a: 7.2, b: 9.6 }];
   const vf = arg(buildCommand({ ...base, closeups }).args, "-vf");
-  assert.match(vf, /^sendcmd=f=track\.txt,split\[wide\]\[close\];\[wide\]crop@wide=w=608:h=1080:x=600:y=0,eq=/);
-  assert.match(vf, /\[close\]crop@close=w=468:h=830:x=670:y=76,eq=[^;]*scale=1080:1920,setsar=1\[cv\];/);
-  assert.match(vf, /\[wv\]\[cv\]overlay=enable='between\(t,2\.40,4\.80\)\+between\(t,7\.20,9\.60\)'/);
-  assert.match(vf, /9\.60\)',fade=t=in/); // the rest of the chain continues after the switch
-});
-
-test("cutTrackTargets: face tracking moves both crops, the close-up keeping its offset", () => {
-  const g = cropGeometry(1920, 1080);
-  const text = trackFileText([{ t: 0, x: 100 }, { t: 1, x: 200 }], g.axis, cutTrackTargets(g));
-  assert.equal(text.split("\n")[0], "0.00 crop@wide x 100+(100)*(t-0.00)/1.00, crop@close x 170+(100)*(t-0.00)/1.00;");
-  assert.equal(text.split("\n")[1], "1.00 crop@wide x 200, crop@close x 270;");
+  assert.match(vf, /^sendcmd=f=track\.txt,crop=w=608:h=1080:x=600:y=0,eq=[^,]*,unsharp=[^,]*,fps=30,zoompan=z='1\+0\.250\*\(/);
+  assert.match(vf, /:x='\(iw-iw\/zoom\)\*0\.5':y='\(ih-ih\/zoom\)\*0\.3':d=1:s=1080x1920:fps=30,setsar=1/);
+  assert.doesNotMatch(vf, /overlay|split|scale=/);
+  assert.match(vf, /setsar=1,fade=t=in/); // the rest of the chain continues after the zoom
+  assert.deepEqual(zoomFocus(cropGeometry(1080, 2400)), { fx: 0.5, fy: 0.5 });
 });
 
 test("clip volume: without music it's applied after loudnorm, so it isn't normalised away", () => {

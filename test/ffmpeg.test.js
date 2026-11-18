@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cropGeometry, trackFileText, buildCommand, cutTrackTargets, FONT_FILE, FONT_DIR } from "../editor.js";
+import { cropGeometry, trackFileText, buildCommand, FONT_FILE, FONT_DIR } from "../editor.js";
 import { beatGrid, cutPlan, synthDrums, encodeWav } from "../beats.js";
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
@@ -78,7 +78,7 @@ test("noise reduction, generated drums ducked under the voice, and beat cuts ren
     writeFileSync(join(dir, "music.wav"), encodeWav(synthDrums(grid.beats, grid.phase, 12), 44100));
 
     const geometry = cropGeometry(1280, 720);
-    writeFileSync(join(dir, "track.txt"), trackFileText([{ t: 0, x: 100 }, { t: 6, x: 500 }], geometry.axis, cutTrackTargets(geometry)));
+    writeFileSync(join(dir, "track.txt"), trackFileText([{ t: 0, x: 100 }, { t: 6, x: 500 }], geometry.axis));
     const { args, textFiles } = buildCommand({
       inputName: "input.mp4", start: 0, duration: 12, geometry, staticOffset: 100, hasTrack: true,
       captions: [{ text: "hello there", a: 1, b: 5 }], title: "Test", grade: true, captionStyle: "pop",

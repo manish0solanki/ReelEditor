@@ -154,33 +154,28 @@ export function noiseFloor(rmsDb) {
   return v.length ? v[Math.floor(0.05 * (v.length - 1))] : -60;
 }
 
-const CLOSEUP_ZOOM = 1.3;
+// Beat cuts are smooth zooms: the picture eases in to a close-up of the singer and back out, each
+// move taking ZOOM_MOVE seconds and centred on the bar line it belongs to.
+export const CLOSEUP_ZOOM = 1.25;
+export const ZOOM_MOVE = 0.6;
+export const CUT_FPS = 30; // zoompan needs a fixed frame rate to keep the picture in sync with the sound
 
-// The close-up window for beat cuts: 1/1.3 the size of the wide crop, centred on the same point along
-// the tracking axis, and nearer the top across it (faces are usually in the upper part of the frame).
-// dx/dy are offsets from the wide window's position.
-export function closeupGeometry(geometry) {
-  const w = even(geometry.cropW / CLOSEUP_ZOOM);
-  const h = even(geometry.cropH / CLOSEUP_ZOOM);
-  const spareX = geometry.cropW - w;
-  const spareY = geometry.cropH - h;
-  const along = 0.5; // centred on the tracked face
-  const across = 0.3; // a little headroom above the face
-  return {
-    w,
-    h,
-    dx: even(spareX * (geometry.axis === "x" ? along : 0.5)),
-    dy: even(spareY * (geometry.axis === "y" ? along : across)),
-  };
+// Where the zoom aims, as a fraction of the cropped picture: centred along the tracking axis (the crop
+// already follows the face there) and nearer the top across it (faces are usually in the upper part).
+export function zoomFocus(geometry) {
+  return { fx: 0.5, fy: geometry.axis === "y" ? 0.5 : 0.3 };
 }
 
-// With beat cuts, the face tracking moves both crops: the close-up keeps its offset from the wide shot.
-export function cutTrackTargets(geometry) {
-  const c = closeupGeometry(geometry);
-  return [
-    { name: "crop@wide", offset: 0 },
-    { name: "crop@close", offset: geometry.axis === "y" ? c.dy : c.dx },
-  ];
+// The zoom level at time `it` as an ffmpeg expression: 1 normally, CLOSEUP_ZOOM during close-ups,
+// with smoothstep (ease in and out) moves of ZOOM_MOVE seconds centred on each change.
+export function zoomExpression(closeups, { zoom = CLOSEUP_ZOOM, move = ZOOM_MOVE } = {}) {
+  const ease = (at) => {
+    const t0 = (at - move / 2).toFixed(3);
+    const c = `clip((it-${t0})/${move},0,1)`;
+    return `${c}*${c}*(3-2*${c})`;
+  };
+  const sum = closeups.map((c) => `${ease(c.a)}-${ease(c.b)}`).join("+");
+  return `1+${(zoom - 1).toFixed(3)}*(${sum || "0"})`;
 }
 
 // Text for ffmpeg's sendcmd filter. At each key the crop offset becomes an expression of time that
@@ -334,20 +329,22 @@ export function buildCommand({
   const toFrame = [`scale=${FRAME_W}:${FRAME_H}`, "setsar=1"];
 
   if (closeups.length) {
-    // Beat cuts: the picture is split into a wide shot and a close-up of the singer, each cropped,
-    // graded and scaled on its own; the close-up is shown over the wide shot during its stretches.
-    const close = closeupGeometry(geometry);
-    const wideX = geometry.axis === "x" ? staticOffset : 0;
-    const wideY = geometry.axis === "y" ? staticOffset : 0;
-    const enable = closeups.map((c) => `between(t,${c.a.toFixed(2)},${c.b.toFixed(2)})`).join("+");
+    // Beat cuts: one tracked crop, then zoompan eases in to the close-ups and back out (it also scales
+    // to 1080x1920, from the cropped picture's own pixels). fps first: zoompan works frame by frame.
+    if (geometry.axis !== "none") {
+      if (hasTrack) v.push("sendcmd=f=track.txt");
+      v.push(
+        geometry.axis === "x"
+          ? `crop=w=${geometry.cropW}:h=${geometry.cropH}:x=${staticOffset}:y=0`
+          : `crop=w=${geometry.cropW}:h=${geometry.cropH}:x=0:y=${staticOffset}`
+      );
+    }
+    const { fx, fy } = zoomFocus(geometry);
     v.push(
-      (hasTrack ? "sendcmd=f=track.txt," : "") +
-        "split[wide][close];" +
-        [`[wide]crop@wide=w=${geometry.cropW}:h=${geometry.cropH}:x=${wideX}:y=${wideY}`, ...gradeFilters, ...toFrame].join(",") +
-        "[wv];" +
-        [`[close]crop@close=w=${close.w}:h=${close.h}:x=${wideX + close.dx}:y=${wideY + close.dy}`, ...gradeFilters, ...toFrame].join(",") +
-        "[cv];" +
-        `[wv][cv]overlay=enable='${enable}'`
+      ...gradeFilters,
+      `fps=${CUT_FPS}`,
+      `zoompan=z='${zoomExpression(closeups)}':x='(iw-iw/zoom)*${fx}':y='(ih-ih/zoom)*${fy}':d=1:s=${FRAME_W}x${FRAME_H}:fps=${CUT_FPS}`,
+      "setsar=1"
     );
   } else {
     if (geometry.axis !== "none") {
