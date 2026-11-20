@@ -265,3 +265,168 @@ function reasonsFor(parts) {
 }
 
 const round = (v) => Math.round(v * 10) / 10;
+
+// The pause nearest `target` in [a, b): among frames within 3 dB of the quietest (smoothed), the
+// closest one. Returns -1 if the range is empty.
+function nearestPause(rms, target, a, b) {
+  const sm = (i) => (rms[i - 1] + 2 * rms[i] + rms[i + 1]) / 4;
+  const q = quietest(rms, a, b);
+  if (q < 0) return -1;
+  const limit = sm(q) + 3;
+  let best = q;
+  for (let i = Math.max(1, a); i < Math.min(rms.length - 1, b); i++) {
+    if (sm(i) <= limit && Math.abs(i - target) < Math.abs(best - target)) best = i;
+  }
+  return best;
+}
+
+// ---- Highlights in any video (talks, podcasts, reviews, vlogs, sport, gaming) -----------------
+
+const HIGHLIGHT_WEIGHTS = { reaction: 0.3, lively: 0.2, energy: 0.15, busy: 0.15, hook: 0.2 };
+
+// What kind of video this is, from the sound classifier: "singing" when singing or music fills a good
+// part of it, otherwise "talk" when there's mostly speech, else "any".
+export function guessContent(windows, sings = []) {
+  if (!windows.length) return "any";
+  const n = windows.length;
+  const sung = sings.filter(Boolean).length / n;
+  const musical = windows.filter((w) => w.music > 0.4 && w.music > w.speech).length / n;
+  const talking = windows.filter((w) => w.speech > 0.3 && w.speech >= w.music).length / n;
+  if (sung >= 0.25 || (musical >= 0.5 && talking < 0.3)) return "singing";
+  if (talking >= 0.4) return "talk";
+  return "any";
+}
+
+// Best moments for short clips in any video. Looks for what keeps people watching: reactions
+// (laughter, applause, cheering, shouting), lively speech (the voice rising and falling rather than a
+// monotone), loudness, little dead air, and a strong first few seconds. Clips start and end in pauses
+// so they don't cut mid-sentence, and the opening and closing of the video (intros, outros, "like and
+// subscribe") are avoided. talk: speech counts towards "busy" (otherwise any sound does).
+// Returns the same shape as findBestMoments.
+export function findHighlights({ features, windows = [], duration, length = 30, count = 3, talk = false }) {
+  const { hop, rms } = features;
+  const n = rms.length;
+  // Skip the first and last few percent (at most 20 s each) when the video is long enough.
+  const edge = Math.min(20, 0.03 * duration);
+  let lo = duration > length * 3 ? edge : 0;
+  let hi = duration > length * 3 ? duration - edge : duration;
+  if (hi - lo <= length + 1) {
+    lo = 0;
+    hi = duration;
+    if (hi <= length + 1) return [{ start: 0, end: round(duration), score: 100, parts: null, reasons: ["the whole video fits"] }];
+  }
+
+  // Loudness scaled to 0..1 across the video (5th to 95th percentile).
+  const sorted = rms.slice().sort((a, b) => a - b);
+  const p = (q) => sorted[Math.min(n - 1, Math.floor(q * (n - 1)))];
+  const quiet = p(0.05);
+  const loud = p(0.95);
+  const energy = rms.map((v) => (loud > quiet ? Math.min(1, Math.max(0, (v - quiet) / (loud - quiet))) : 0.5));
+  // Dead air: frames well below the video's typical level.
+  const silentDb = Math.max(quiet + 3, p(0.5) - 25);
+  const silent = rms.map((v) => (v < silentDb ? 1 : 0));
+
+  // Liveliness: how much the loudness moves over about a second (speech with emphasis, a game's
+  // action). Measured as the spread of the frame loudness, scaled against the video's own range.
+  const span = Math.max(1, Math.round(1 / hop));
+  const spread = new Float64Array(n);
+  for (let f = 0; f < n; f++) {
+    let s = 0;
+    let s2 = 0;
+    let k = 0;
+    for (let i = Math.max(0, f - span); i < Math.min(n, f + span); i++) {
+      s += energy[i];
+      s2 += energy[i] * energy[i];
+      k++;
+    }
+    spread[f] = Math.sqrt(Math.max(0, s2 / k - (s / k) ** 2));
+  }
+  const spreadSorted = Array.from(spread).sort((a, b) => a - b);
+  const spreadTop = spreadSorted[Math.floor(0.95 * (n - 1))] || 1;
+  const lively = Array.from(spread, (v) => Math.min(1, v / spreadTop));
+
+  // Per-frame speech, reactions and "something happening", spread from the ~1 s classifier windows.
+  const speech = new Float64Array(n);
+  const reaction = new Float64Array(n);
+  windows.forEach((w, i) => {
+    const next = windows[i + 1] ? windows[i + 1].t : w.t + 0.975;
+    const r = Math.min(1, 1.5 * (w.laugh || 0) + (w.crowd || 0) + (w.excited || 0));
+    for (let f = Math.max(0, Math.floor(w.t / hop)); f < Math.min(n, Math.ceil(next / hop)); f++) {
+      speech[f] = w.speech > 0.3 ? 1 : 0;
+      reaction[f] = r;
+    }
+  });
+  // Where each reaction starts (how much it rose), so it's counted where it begins, not its tail.
+  const onset = Array.from(reaction, (r, f) => Math.max(0, r - (f ? reaction[f - 1] : 0)));
+  const busy = Array.from(silent, (s, f) => (talk && windows.length ? speech[f] : 1 - s));
+
+  const L = Math.round(length / hop);
+  const H = Math.min(L, Math.round(3 / hop)); // the hook: the first 3 seconds
+  const after = Math.round(3 / hop); // a laugh or applause just after a line belongs to it
+  const step = Math.max(1, Math.round(0.5 / hop));
+  const candidates = [];
+  for (let s = Math.ceil(lo / hop); s + L <= Math.floor(hi / hop); s += step) {
+    const e = s + L;
+    let peak = 0;
+    // A reaction counts from 3 s in, so the clip includes what caused it (the joke before the laugh).
+    for (let f = s + after; f < Math.min(n, e + after); f++) peak = Math.max(peak, onset[f]);
+    const parts = {
+      // The strongest reaction, plus a little for reactions all through it.
+      reaction: Math.min(1, 0.75 * peak + mean(reaction, s + after, e)),
+      lively: mean(lively, s, e),
+      energy: mean(energy, s, e),
+      busy: mean(busy, s, e),
+      hook: 0.5 * mean(energy, s + Math.round(0.3 / hop), s + H) + 0.5 * mean(busy, s, s + H),
+    };
+    let score = Object.entries(HIGHLIGHT_WEIGHTS).reduce((sum, [k, wgt]) => sum + wgt * parts[k], 0);
+    score -= 0.6 * Math.max(0, mean(silent, s, e) - 0.15); // more than a little dead air
+    candidates.push({ s, e, score, parts });
+  }
+  candidates.sort((a, b) => b.score - a.score);
+
+  // Start and end in a pause: the quietest point nearby (mostly earlier for the start, later for the
+  // end, up to 4 s or 15% of the clip), so a sentence isn't cut.
+  const reach = Math.round(Math.min(4, 0.15 * length) / hop);
+  const back = Math.round(1 / hop);
+  const snap = (c) => {
+    const s2 = nearestPause(rms, c.s, c.s - reach, c.s + back);
+    const e2 = nearestPause(rms, c.e, c.e - back, c.e + reach + 1);
+    return {
+      start: Math.max(0, (s2 >= 0 ? s2 : c.s) * hop),
+      end: Math.min(duration, (e2 >= 0 ? e2 : c.e) * hop),
+    };
+  };
+
+  // Different moments, spread out: no overlap, and a gap of at least a quarter clip between them
+  // while there's room (relaxed if the video is too short for that).
+  const pick = (gap) => {
+    const out = [];
+    for (const c of candidates) {
+      if (out.length >= count) break;
+      const edges = snap(c);
+      const clash = out.some((o) => edges.start < o.end + gap && o.start < edges.end + gap);
+      if (!clash) out.push({ ...c, ...edges });
+    }
+    return out;
+  };
+  let picked = pick(0.25 * length);
+  if (picked.length < count) picked = pick(0);
+
+  return picked.map((c) => ({
+    start: round(c.start),
+    end: round(c.end),
+    score: Math.round(100 * Math.max(0, c.score)),
+    parts: c.parts,
+    reasons: highlightReasons(c.parts),
+  }));
+}
+
+function highlightReasons(parts) {
+  const r = [];
+  if (parts.reaction >= 0.4) r.push("laughter, applause or cheering");
+  if (parts.lively >= 0.55) r.push("lively delivery");
+  if (parts.hook >= 0.7) r.push("strong opening");
+  if (parts.energy >= 0.6) r.push("high energy");
+  if (!r.length) r.push("the most going on");
+  return r;
+}

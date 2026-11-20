@@ -580,9 +580,14 @@ export const VOCAL_LABELS = [
   "Singing", "Male singing", "Female singing", "Child singing", "Synthetic singing", "Choir",
   "Vocal music", "A capella", "Humming", "Rapping", "Chant", "Mantra", "Yodeling",
 ];
-export const AUDIO_LABELS = [...VOCAL_LABELS, "Speech", "Music", "Applause", "Cheering", "Crowd", "Silence"];
+export const LAUGH_LABELS = ["Laughter", "Giggle", "Belly laugh", "Chuckle, chortle", "Snicker"];
+export const EXCITED_LABELS = ["Shout", "Yell", "Screaming", "Battle cry", "Whoop"];
+export const AUDIO_LABELS = [
+  ...VOCAL_LABELS, ...LAUGH_LABELS, ...EXCITED_LABELS,
+  "Speech", "Music", "Applause", "Cheering", "Crowd", "Silence",
+];
 
-// { categoryName: score } for one window -> the four numbers the trim logic uses.
+// { categoryName: score } for one window -> the numbers the trim and highlight logic use.
 export function summarizeScores(scores) {
   const get = (k) => scores[k] || 0;
   return {
@@ -590,6 +595,8 @@ export function summarizeScores(scores) {
     speech: get("Speech"),
     music: get("Music"),
     crowd: get("Applause") + get("Cheering") + get("Crowd"),
+    laugh: LAUGH_LABELS.reduce((sum, k) => sum + get(k), 0),
+    excited: EXCITED_LABELS.reduce((sum, k) => sum + get(k), 0),
   };
 }
 

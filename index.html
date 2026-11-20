@@ -88,9 +88,17 @@
       </div>
       <label class="check">
         <input id="multi" type="checkbox" />
-        <span class="check-text">Make several clips<small>Finds the best moments in a long video and makes a finished reel from each</small></span>
+        <span class="check-text">Make several clips<small>Finds the best moments in a long video (a song, talk, podcast, vlog, game…) and makes a finished reel from each</small></span>
       </label>
       <div id="multiOptions" class="indent" hidden>
+        <label class="field">Video type
+          <select id="clipContent">
+            <option value="auto" selected>Automatic (decides from the sound)</option>
+            <option value="talk">Talking: podcast, interview, review, vlog</option>
+            <option value="singing">Singing or music</option>
+            <option value="any">Anything else: sport, gaming, events</option>
+          </select>
+        </label>
         <div class="row">
           <label class="field">Clips
             <select id="clipCount">
@@ -112,7 +120,7 @@
         </label>
         <label class="field">Captions
           <select id="clipCaptions">
-            <option value="auto" selected>Write them from the singing (slower)</option>
+            <option value="auto" selected>Write them from the speech or singing (slower)</option>
             <option value="lyrics">Use the lyrics box (step 6)</option>
             <option value="none">No captions</option>
           </select>

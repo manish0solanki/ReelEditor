@@ -2,7 +2,7 @@
 // from the page's own site, so these two packages are served from vendor/ instead of a CDN.
 import { FFmpeg } from "./vendor/ffmpeg/index.js";
 import { dlog, openPanel } from "./debug.js";
-import { audioFeatures, repetitionCurve, findBestMoments } from "./moments.js";
+import { audioFeatures, repetitionCurve, findBestMoments, findHighlights, guessContent } from "./moments.js";
 import { beatGrid, cutPlan, synthDrums, encodeWav, matchMusic, toGray, frameMotion, movementGrid } from "./beats.js";
 import { colorHistogram, groupFaces, followFace, tileRegions, mergeDetections } from "./faces.js";
 import { chunksToLyrics } from "./lyrics.js";
@@ -118,6 +118,7 @@ const els = {
   clipLength: $("clipLength"),
   hookText: $("hookText"),
   clipCaptions: $("clipCaptions"),
+  clipContent: $("clipContent"),
   progressBar: $("progressBar"),
   clipList: $("clipList"),
   goLabel: $("goLabel"),
@@ -1210,6 +1211,7 @@ function saveMultiChoice() {
         count: els.clipCount.value,
         length: els.clipLength.value,
         captions: els.clipCaptions.value,
+        content: els.clipContent.value,
         bar: els.progressBar.checked,
       })
     );
@@ -1221,7 +1223,7 @@ try {
   const saved = JSON.parse(localStorage.getItem(MULTI_KEY) || "null");
   if (saved) {
     els.multi.checked = !!saved.on;
-    for (const [el, v] of [[els.clipCount, saved.count], [els.clipLength, saved.length], [els.clipCaptions, saved.captions]]) {
+    for (const [el, v] of [[els.clipCount, saved.count], [els.clipLength, saved.length], [els.clipCaptions, saved.captions], [els.clipContent, saved.content]]) {
       if ([...el.options].some((o) => o.value === v)) el.value = v;
     }
     if (typeof saved.bar === "boolean") els.progressBar.checked = saved.bar;
@@ -1229,7 +1231,7 @@ try {
 } catch {
   // ignore
 }
-for (const el of [els.multi, els.clipCount, els.clipLength, els.clipCaptions, els.progressBar]) {
+for (const el of [els.multi, els.clipCount, els.clipLength, els.clipCaptions, els.clipContent, els.progressBar]) {
   el.addEventListener("change", () => {
     saveMultiChoice();
     updateMultiUi();
@@ -1294,21 +1296,31 @@ async function runBatch() {
     return showError("Couldn't analyse this video's sound, so the best moments can't be found. Untick Make several clips and set Start and End yourself.");
   }
   const { windows, features, duration } = analysis;
-  const b = findSongBounds(windows, duration, { leadIn: LEAD_IN });
-  // Look only inside the song when it has room for every clip; otherwise (a talk, an interview,
-  // or a short song in a long video) search the whole video.
-  const songRoom = b.found ? b.end - b.start : 0;
-  const useSong = b.found && songRoom >= count * length * 1.2;
-  if (b.found && !useSong) dlog("info", `Song found (${formatTime(b.start)}-${formatTime(b.end)}) is too short for ${count} clips; using the whole video`);
-  const picked = findBestMoments({
-    features,
-    windows,
-    sings: singingFlags(windows),
-    duration,
-    length,
-    count,
-    song: useSong ? { start: b.start, end: b.end } : null,
-  }).sort((x, y) => x.start - y.start);
+  const sings = singingFlags(windows);
+  let content = els.clipContent.value;
+  if (content === "auto") {
+    content = guessContent(windows, sings);
+    dlog("info", `Video type from the sound: ${content}`);
+  }
+  let picked;
+  if (content === "singing") {
+    const b = findSongBounds(windows, duration, { leadIn: LEAD_IN });
+    // Look only inside the song when it has room for every clip; otherwise (a short song in a long
+    // video) search the whole video.
+    const useSong = b.found && b.end - b.start >= count * length * 1.2;
+    picked = findBestMoments({
+      features,
+      windows,
+      sings,
+      duration,
+      length,
+      count,
+      song: useSong ? { start: b.start, end: b.end } : null,
+    });
+  } else {
+    picked = findHighlights({ features, windows, duration, length, count, talk: content === "talk" });
+  }
+  picked.sort((x, y) => x.start - y.start);
   dlog("info", `Clips: ${picked.map((m) => `${formatTime(m.start)}-${formatTime(m.end)} (${m.score})`).join(", ")}`);
   if (!picked.length) return showError("Couldn't find good moments in this video. Set Start and End yourself and make one reel.");
 
@@ -1343,7 +1355,7 @@ async function runBatch() {
         if (captionSource === "lyrics") {
           captions = captionWindows(lyricItems, m.start, clipDur);
         } else if (captionSource === "auto") {
-          setStatus(`${prefix} writing captions from the singing…`);
+          setStatus(`${prefix} writing captions…`);
           try {
             const result = await transcribeRange(m.start, clipDur, (text) => setStatus(`${prefix} ${text}`));
             const lines = chunksToLyrics(result.chunks, m.start);
@@ -1564,7 +1576,7 @@ async function transcribeRange(startT, duration, onPhase = () => {}) {
         if (data.type === "download") {
           onPhase(`Downloading the speech model (first time only)… ${Math.round((100 * data.loaded) / data.total)}%`, false);
         } else if (data.type === "listening") {
-          onPhase("Listening to the singing… this takes a while on a phone.", true);
+          onPhase("Listening to the words… this takes a while on a phone.", true);
         } else if (data.type === "done") resolve(data);
         else if (data.type === "error") reject(new Error(data.message));
       };
