@@ -112,6 +112,15 @@ const els = {
   status: $("status"),
   result: $("result"),
   download: $("download"),
+  multi: $("multi"),
+  multiOptions: $("multiOptions"),
+  clipCount: $("clipCount"),
+  clipLength: $("clipLength"),
+  hookText: $("hookText"),
+  clipCaptions: $("clipCaptions"),
+  progressBar: $("progressBar"),
+  clipList: $("clipList"),
+  goLabel: $("goLabel"),
 };
 
 let ffmpeg = null; // the loaded engine, or null
@@ -1059,57 +1068,17 @@ els.musicFile.addEventListener("change", () => {
 });
 updateSoundOptions();
 
-els.go.addEventListener("click", async () => {
-  const showError = (msg) => {
-    els.output.hidden = false;
-    setStatus(msg);
-  };
+// The source video is copied into the engine once and reused when making several clips.
+let inputOnEngine = null; // { engine, file }
 
-  if (!inputFile) return showError("Choose a video first.");
-  if (trimJob) {
-    els.go.disabled = true;
-    els.output.hidden = false;
-    setStatus("Finishing finding the song…");
-    await trimJob;
-    els.go.disabled = false;
-  }
-  if (faceScanJob) {
-    els.go.disabled = true;
-    await faceScanJob;
-    els.go.disabled = false;
-  }
-
-  const videoDuration = els.preview.duration;
+// Makes one reel from the current settings. Returns { blob, notes }; throws if it fails.
+async function renderReel({ startT, duration, captions, title, fadeIn = 0.6, fadeOut = 1, progressBar = false, keepInput = false, label }) {
   const srcW = els.preview.videoWidth;
   const srcH = els.preview.videoHeight;
-  if (!srcW || !srcH) return showError("Couldn't read this video's size. Try a different file.");
   const geometry = cropGeometry(srcW, srcH);
-
-  const startT = parseTime(els.start.value);
-  let endT = parseTime(els.end.value);
-  if (Number.isNaN(startT) || Number.isNaN(endT)) return showError("Start and end must be times like 0:12 or 12.5.");
-  endT = Math.min(endT, videoDuration);
-  const duration = endT - startT;
-  if (startT < 0 || duration < MIN_DURATION) {
-    return showError(`End must be after start, with at least ${MIN_DURATION} seconds between them.`);
-  }
-
   const fallbackOffset = offsetFromFraction(geometry, Number(els.pos.value) / 100);
-
-  const { items, bad } = parseLyrics(els.lyrics.value);
-  const captions = captionWindows(items, startT, duration);
-
-  els.go.disabled = true;
-  els.output.hidden = false;
-  els.result.hidden = true;
-  els.download.hidden = true;
-  els.progress.value = 0;
-  startTimer(duration);
-  // The button is in a bar at the bottom of the screen: bring the progress into view.
-  els.output.scrollIntoView({ behavior: "smooth", block: "start" });
-  let ok = false;
-
-  const usedFiles = [inputName, FONT_FILE, "track.txt", "output.mp4"];
+  const usedFiles = [FONT_FILE, "track.txt", "output.mp4"];
+  if (!keepInput) usedFiles.push(inputName);
 
   try {
     let keys = null;
@@ -1138,7 +1107,7 @@ els.go.addEventListener("click", async () => {
       staticOffset: keys ? keys[0].x : fallbackOffset,
       hasTrack: !!keys,
       captions,
-      title: els.title.value.trim(),
+      title,
       grade: els.grade.checked,
       captionStyle: els.captionStyle.value,
       noise: els.noise.value,
@@ -1151,13 +1120,19 @@ els.go.addEventListener("click", async () => {
       transition: els.transition.value,
       beats: sound.beats || [],
       downbeats: sound.downbeats || [],
+      fadeIn,
+      fadeOut,
+      progressBar,
     });
     for (const f of textFiles) usedFiles.push(f.name);
 
     const encode = async () => {
       await loadEngine();
-      setStatus("Building your reel… keep this tab open and the screen on.");
-      await ffmpeg.writeFile(inputName, await fetchFile(inputFile));
+      setStatus(label || "Building your reel… keep this tab open and the screen on.");
+      if (!inputOnEngine || inputOnEngine.engine !== ffmpeg || inputOnEngine.file !== inputFile) {
+        await ffmpeg.writeFile(inputName, await fetchFile(inputFile));
+        inputOnEngine = { engine: ffmpeg, file: inputFile };
+      }
       try {
         await ffmpeg.createDir(FONT_DIR);
       } catch {
@@ -1193,36 +1168,10 @@ els.go.addEventListener("click", async () => {
       timer.encoding = false;
       data = await encode();
     }
-    const blob = new Blob([data.buffer], { type: "video/mp4" });
-    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
-    downloadUrl = URL.createObjectURL(blob);
-
-    els.result.src = downloadUrl;
-    els.result.hidden = false;
-    // The first frame is the fade-in from black: show a frame from 1 s in until it's played.
-    els.result.addEventListener("loadeddata", () => { els.result.currentTime = Math.min(1, duration / 2); }, { once: true });
-    els.download.href = downloadUrl;
-    els.download.hidden = false;
-    els.progress.value = 1;
-    ok = true;
-
-    const notes = [];
-    if (bad.length) notes.push(`${bad.length} lyric line(s) were skipped.`);
-    notes.push(...sound.notes);
+    const notes = [...sound.notes];
     if (broll.length) notes.push(`Added ${broll.length} b-roll shot${broll.length === 1 ? "" : "s"} at ${broll.map((b) => formatTime(b.at)).join(", ")}.`);
-    setStatus(`Done! Preview below, then download and upload to Instagram. ${notes.join(" ")}`.trim());
-    els.output.scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch (err) {
-    console.error(err);
-    openPanel();
-    const msg = String(err?.message || err).replace(/\.+$/, "");
-    const memory = /memory|out of bounds|abort|exited with code/i.test(msg);
-    setStatus(
-      `Something went wrong: ${msg}.${memory ? " Try a shorter clip or a smaller file." : ""} ` +
-        "The Debug log at the bottom shows the details; tap Copy log to share them."
-    );
+    return { blob: new Blob([data.buffer], { type: "video/mp4" }), notes };
   } finally {
-    stopTimer(ok);
     // Tidy up through a working engine only (a dead one would never answer).
     if (ffmpeg && engineMode) {
       for (const name of usedFiles) {
@@ -1233,6 +1182,282 @@ els.go.addEventListener("click", async () => {
         }
       }
     }
+    if (!keepInput) inputOnEngine = null;
+  }
+}
+
+// ---- Several clips from one video ----
+const MULTI_KEY = "reelmaker.multi";
+
+function updateMultiUi() {
+  els.multiOptions.hidden = !els.multi.checked;
+  els.goLabel.textContent = els.multi.checked ? `Make ${els.clipCount.value} clips` : "Make reel";
+}
+function saveMultiChoice() {
+  try {
+    localStorage.setItem(
+      MULTI_KEY,
+      JSON.stringify({
+        on: els.multi.checked,
+        count: els.clipCount.value,
+        length: els.clipLength.value,
+        captions: els.clipCaptions.value,
+        bar: els.progressBar.checked,
+      })
+    );
+  } catch {
+    // ignore
+  }
+}
+try {
+  const saved = JSON.parse(localStorage.getItem(MULTI_KEY) || "null");
+  if (saved) {
+    els.multi.checked = !!saved.on;
+    for (const [el, v] of [[els.clipCount, saved.count], [els.clipLength, saved.length], [els.clipCaptions, saved.captions]]) {
+      if ([...el.options].some((o) => o.value === v)) el.value = v;
+    }
+    if (typeof saved.bar === "boolean") els.progressBar.checked = saved.bar;
+  }
+} catch {
+  // ignore
+}
+for (const el of [els.multi, els.clipCount, els.clipLength, els.clipCaptions, els.progressBar]) {
+  el.addEventListener("change", () => {
+    saveMultiChoice();
+    updateMultiUi();
+  });
+}
+updateMultiUi();
+
+let clipUrls = [];
+
+// One card in the results: a preview and a Download button for a finished clip, or why it failed.
+function addClipCard(index, moment, blob, notes, error) {
+  const card = document.createElement("div");
+  card.className = error ? "clip failed" : "clip";
+  const h = document.createElement("h3");
+  h.textContent = `Clip ${index + 1} · ${formatTime(moment.start)} to ${formatTime(moment.end)}`;
+  const p = document.createElement("p");
+  card.append(h, p);
+  if (error) {
+    p.textContent = `Couldn't make this clip: ${String(error.message || error).replace(/\.+$/, "")}.`;
+  } else {
+    const url = URL.createObjectURL(blob);
+    clipUrls.push(url);
+    p.textContent = [moment.reasons?.length ? `Picked for ${moment.reasons.join(", ")}.` : "", ...notes].join(" ").trim();
+    const video = document.createElement("video");
+    video.controls = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.src = url;
+    video.addEventListener("loadeddata", () => { video.currentTime = Math.min(1, (moment.end - moment.start) / 2); }, { once: true });
+    const a = document.createElement("a");
+    a.className = "button primary wide";
+    a.href = url;
+    a.download = `reel-clip-${index + 1}.mp4`;
+    a.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.2l3.1-3.1 1.4 1.4L12 16l-5.5-5.5 1.4-1.4 3.1 3.1zM5 18h14v2H5z" /></svg>';
+    a.append(`Download clip ${index + 1}`);
+    card.append(video, a);
+  }
+  els.clipList.append(card);
+}
+
+// Picks the best non-overlapping moments in the video and makes a finished reel from each.
+async function runBatch() {
+  const count = Number(els.clipCount.value);
+  const length = Number(els.clipLength.value);
+  const showError = (msg) => {
+    els.output.hidden = false;
+    setStatus(msg);
+  };
+  if (!analysis || analysis.file !== inputFile) {
+    // The sound analysis only runs on its own with trimming on; run it now.
+    els.go.disabled = true;
+    showError("Listening for the best moments…");
+    try {
+      analysis = { file: inputFile, duration: els.preview.duration, ...(await analyzeAudio(inputFile)) };
+    } catch (err) {
+      console.warn("Sound analysis failed", err);
+    } finally {
+      els.go.disabled = false;
+    }
+  }
+  if (!analysis || analysis.file !== inputFile) {
+    return showError("Couldn't analyse this video's sound, so the best moments can't be found. Untick Make several clips and set Start and End yourself.");
+  }
+  const { windows, features, duration } = analysis;
+  const b = findSongBounds(windows, duration, { leadIn: LEAD_IN });
+  const picked = findBestMoments({
+    features,
+    windows,
+    sings: singingFlags(windows),
+    duration,
+    length,
+    count,
+    song: b.found ? { start: b.start, end: b.end } : null,
+  }).sort((x, y) => x.start - y.start);
+  dlog("info", `Clips: ${picked.map((m) => `${formatTime(m.start)}-${formatTime(m.end)} (${m.score})`).join(", ")}`);
+  if (!picked.length) return showError("Couldn't find good moments in this video. Set Start and End yourself and make one reel.");
+
+  const hook = els.hookText.value.trim() || els.title.value.trim();
+  const captionSource = els.clipCaptions.value;
+  const lyricItems = captionSource === "lyrics" ? parseLyrics(els.lyrics.value).items : [];
+
+  els.go.disabled = true;
+  els.output.hidden = false;
+  els.result.hidden = true;
+  els.download.hidden = true;
+  for (const url of clipUrls) URL.revokeObjectURL(url);
+  clipUrls = [];
+  els.clipList.textContent = "";
+  els.output.scrollIntoView({ behavior: "smooth", block: "start" });
+  const t0 = performance.now();
+  let made = 0;
+  if (picked.length < count) {
+    dlog("info", `Only ${picked.length} moment(s) fit in this video`);
+  }
+
+  try {
+    for (let i = 0; i < picked.length; i++) {
+      const m = picked[i];
+      const clipDur = m.end - m.start;
+      const prefix = `Clip ${i + 1} of ${picked.length}:`;
+      els.progress.value = 0;
+      startTimer(clipDur);
+      let ok = false;
+      try {
+        let captions = [];
+        if (captionSource === "lyrics") {
+          captions = captionWindows(lyricItems, m.start, clipDur);
+        } else if (captionSource === "auto") {
+          setStatus(`${prefix} writing captions from the singing…`);
+          try {
+            const result = await transcribeRange(m.start, clipDur, (text) => setStatus(`${prefix} ${text}`));
+            const lines = chunksToLyrics(result.chunks, m.start);
+            captions = captionWindows(parseLyrics(lines.join("\n")).items, m.start, clipDur);
+          } catch (err) {
+            console.warn("Captions failed", err);
+            dlog("info", `Clip ${i + 1}: captions failed (${err.message}); making it without`);
+          }
+        }
+        const { blob, notes } = await renderReel({
+          startT: m.start,
+          duration: clipDur,
+          captions,
+          title: hook,
+          fadeIn: 0.15,
+          fadeOut: 0.3,
+          progressBar: els.progressBar.checked,
+          keepInput: i < picked.length - 1,
+          label: `${prefix} building… keep this tab open and the screen on.`,
+        });
+        if (captionSource === "auto" && !captions.length) notes.unshift("No words were made out, so it has no captions.");
+        addClipCard(i, m, blob, notes);
+        made++;
+        ok = true;
+      } catch (err) {
+        console.error(err);
+        addClipCard(i, m, null, [], err);
+      } finally {
+        stopTimer(ok);
+      }
+    }
+  } finally {
+    inputOnEngine = null;
+    try {
+      if (ffmpeg && engineMode) await withTimeout(ffmpeg.deleteFile(inputName), 5000, "delete timed out");
+    } catch {
+      // already gone
+    }
+    els.progress.value = 1;
+    els.timer.textContent = `Finished in ${clock((performance.now() - t0) / 1000)}`;
+    els.go.disabled = false;
+  }
+  const fewer = picked.length < count ? ` The video only had room for ${picked.length}.` : "";
+  setStatus(
+    made === picked.length
+      ? `Done! ${made} clip${made === 1 ? "" : "s"} below.${fewer} Preview each one, then download the ones you like.`
+      : `Made ${made} of ${picked.length} clips.${fewer} The Debug log at the bottom shows what went wrong.`
+  );
+  if (made < picked.length) openPanel();
+}
+
+function showRenderError(err) {
+  console.error(err);
+  openPanel();
+  const msg = String(err?.message || err).replace(/\.+$/, "");
+  const memory = /memory|out of bounds|abort|exited with code/i.test(msg);
+  setStatus(
+    `Something went wrong: ${msg}.${memory ? " Try a shorter clip or a smaller file." : ""} ` +
+      "The Debug log at the bottom shows the details; tap Copy log to share them."
+  );
+}
+
+els.go.addEventListener("click", async () => {
+  const showError = (msg) => {
+    els.output.hidden = false;
+    setStatus(msg);
+  };
+
+  if (!inputFile) return showError("Choose a video first.");
+  if (trimJob) {
+    els.go.disabled = true;
+    els.output.hidden = false;
+    setStatus("Finishing finding the song…");
+    await trimJob;
+    els.go.disabled = false;
+  }
+  if (faceScanJob) {
+    els.go.disabled = true;
+    await faceScanJob;
+    els.go.disabled = false;
+  }
+  if (!els.preview.videoWidth || !els.preview.videoHeight) return showError("Couldn't read this video's size. Try a different file.");
+  if (els.multi.checked) return runBatch();
+
+  const videoDuration = els.preview.duration;
+  const startT = parseTime(els.start.value);
+  let endT = parseTime(els.end.value);
+  if (Number.isNaN(startT) || Number.isNaN(endT)) return showError("Start and end must be times like 0:12 or 12.5.");
+  endT = Math.min(endT, videoDuration);
+  const duration = endT - startT;
+  if (startT < 0 || duration < MIN_DURATION) {
+    return showError(`End must be after start, with at least ${MIN_DURATION} seconds between them.`);
+  }
+
+  const { items, bad } = parseLyrics(els.lyrics.value);
+  const captions = captionWindows(items, startT, duration);
+
+  els.go.disabled = true;
+  els.output.hidden = false;
+  els.result.hidden = true;
+  els.download.hidden = true;
+  els.clipList.textContent = "";
+  els.progress.value = 0;
+  startTimer(duration);
+  // The button is in a bar at the bottom of the screen: bring the progress into view.
+  els.output.scrollIntoView({ behavior: "smooth", block: "start" });
+  let ok = false;
+
+  try {
+    const { blob, notes } = await renderReel({ startT, duration, captions, title: els.title.value.trim() });
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    downloadUrl = URL.createObjectURL(blob);
+    els.result.src = downloadUrl;
+    els.result.hidden = false;
+    // The first frame is the fade-in from black: show a frame from 1 s in until it's played.
+    els.result.addEventListener("loadeddata", () => { els.result.currentTime = Math.min(1, duration / 2); }, { once: true });
+    els.download.href = downloadUrl;
+    els.download.hidden = false;
+    els.progress.value = 1;
+    ok = true;
+    if (bad.length) notes.unshift(`${bad.length} lyric line(s) were skipped.`);
+    setStatus(`Done! Preview below, then download and upload to Instagram. ${notes.join(" ")}`.trim());
+    els.output.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) {
+    showRenderError(err);
+  } finally {
+    stopTimer(ok);
     els.go.disabled = false;
   }
 });
@@ -1298,6 +1523,32 @@ function setLyricsNote(text) {
   dlog("info", `Lyrics: ${text}`);
 }
 
+// Recognises the words sung between startT and startT + duration. onPhase(text, important) reports
+// progress. Returns { chunks, text, seconds } from the speech worker.
+async function transcribeRange(startT, duration, onPhase = () => {}) {
+  const clip = await performanceSlice(startT, duration);
+  const audio = clip.mono.slice(); // a copy: it's handed over to the worker
+  if (!lyricsWorker) lyricsWorker = new Worker(new URL("./lyrics-worker.js", import.meta.url), { type: "module" });
+  try {
+    return await new Promise((resolve, reject) => {
+      lyricsWorker.onmessage = ({ data }) => {
+        if (data.type === "download") {
+          onPhase(`Downloading the speech model (first time only)… ${Math.round((100 * data.loaded) / data.total)}%`, false);
+        } else if (data.type === "listening") {
+          onPhase("Listening to the singing… this takes a while on a phone.", true);
+        } else if (data.type === "done") resolve(data);
+        else if (data.type === "error") reject(new Error(data.message));
+      };
+      lyricsWorker.onerror = (e) => reject(new Error(e.message || "the speech worker failed to load"));
+      lyricsWorker.postMessage({ audio, model: lyricsEls.model.value, language: lyricsEls.lang.value || null }, [audio.buffer]);
+    });
+  } catch (err) {
+    if (lyricsWorker) lyricsWorker.terminate();
+    lyricsWorker = null;
+    throw err;
+  }
+}
+
 lyricsEls.button.addEventListener("click", async () => {
   if (!inputFile) return setLyricsNote("Choose a video first.");
   const startT = Math.max(0, parseTime(els.start.value) || 0);
@@ -1319,22 +1570,10 @@ lyricsEls.button.addEventListener("click", async () => {
     }
   }, 1000);
   try {
-    const clip = await performanceSlice(startT, duration);
-    const audio = clip.mono.slice(); // a copy: it's handed over to the worker
-    if (!lyricsWorker) lyricsWorker = new Worker(new URL("./lyrics-worker.js", import.meta.url), { type: "module" });
-    const result = await new Promise((resolve, reject) => {
-      lyricsWorker.onmessage = ({ data }) => {
-        if (data.type === "download") {
-          phase = `Downloading the speech model (first time only)… ${Math.round((100 * data.loaded) / data.total)}%`;
-          lyricsEls.note.textContent = phase;
-        } else if (data.type === "listening") {
-          phase = "Listening to the singing… this takes a while on a phone.";
-          setLyricsNote(phase);
-        } else if (data.type === "done") resolve(data);
-        else if (data.type === "error") reject(new Error(data.message));
-      };
-      lyricsWorker.onerror = (e) => reject(new Error(e.message || "the speech worker failed to load"));
-      lyricsWorker.postMessage({ audio, model: lyricsEls.model.value, language: lyricsEls.lang.value || null }, [audio.buffer]);
+    const result = await transcribeRange(startT, duration, (text, show) => {
+      phase = text;
+      if (show) setLyricsNote(text);
+      else lyricsEls.note.textContent = text;
     });
     dlog("info", `Lyrics: ${result.chunks.length} phrases in ${result.seconds.toFixed(1)} s: ${result.text.slice(0, 200)}`);
     const lines = chunksToLyrics(result.chunks, startT);
@@ -1351,8 +1590,6 @@ lyricsEls.button.addEventListener("click", async () => {
   } catch (err) {
     console.warn("Writing lyrics failed", err);
     setLyricsNote(`Couldn't write the lyrics: ${err.message}.`);
-    if (lyricsWorker) lyricsWorker.terminate();
-    lyricsWorker = null;
   } finally {
     clearInterval(tick);
     lyricsEls.button.disabled = false;

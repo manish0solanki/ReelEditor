@@ -382,6 +382,9 @@ export function buildCommand({
   beats = [], // reel-time beats and bar lines, for the "bounce" style
   downbeats = [],
   broll = [], // [{ name, at, len, offset, image }]: cutaway shots laid over the performance
+  fadeIn = 0.6, // seconds of fade from black (and of sound) at the start; short for a hook
+  fadeOut = 1, // seconds of fade at the end
+  progressBar = false, // a bar along the bottom that fills as the reel plays
 }) {
   const textFiles = [];
   const v = [];
@@ -453,14 +456,26 @@ export function buildCommand({
     });
   }
 
-  const fadeOutAt = (duration - 1).toFixed(2);
+  // A progress bar along the bottom: a white strip sliding in from the left as the reel plays, over a
+  // faint track. `null[pbin]` names the picture so far; the strip is a colour source in the same graph.
+  if (progressBar) {
+    const H = 14;
+    v.push(
+      `drawbox=x=0:y=ih-${H}:w=iw:h=${H}:color=white@0.28:t=fill`,
+      `null[pbin];color=c=white:s=${FRAME_W}x${H}:r=${CUT_FPS}:d=${duration.toFixed(2)}[pbar];` +
+        `[pbin][pbar]overlay=x='-w+W*t/${duration.toFixed(3)}':y=H-h:eof_action=pass`
+    );
+  }
+
+  const fadeOutAt = (duration - fadeOut).toFixed(2);
   if (duration > 2) {
-    v.push("fade=t=in:st=0:d=0.6", `fade=t=out:st=${fadeOutAt}:d=1`);
+    if (fadeIn > 0) v.push(`fade=t=in:st=0:d=${fadeIn}`);
+    if (fadeOut > 0) v.push(`fade=t=out:st=${fadeOutAt}:d=${fadeOut}`);
   }
 
   // The performance's own sound: noise reduction first, then fades and gentle compression.
-  const voice = [...noiseFilters(noise, noiseFloorDb), "afade=t=in:st=0:d=0.6"];
-  if (duration > 2) voice.push(`afade=t=out:st=${fadeOutAt}:d=1`);
+  const voice = [...noiseFilters(noise, noiseFloorDb), `afade=t=in:st=0:d=${Math.max(0.05, fadeIn)}`];
+  if (duration > 2 && fadeOut > 0) voice.push(`afade=t=out:st=${fadeOutAt}:d=${fadeOut}`);
   voice.push("acompressor=threshold=0.125:ratio=3:attack=20:release=250");
   const LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11";
 
