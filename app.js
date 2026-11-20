@@ -715,8 +715,8 @@ function updateTrim() {
   else trimJob = runAnalysis(inputFile, d);
 }
 
-els.file.addEventListener("change", () => {
-  const file = els.file.files[0];
+// Loads a video (picked from the device, or downloaded from a link) into the app.
+function useVideoFile(file) {
   if (!file) return;
 
   inputFile = file;
@@ -741,7 +741,9 @@ els.file.addEventListener("change", () => {
   };
   setStatus("");
   els.output.hidden = true;
-});
+}
+
+els.file.addEventListener("change", () => useVideoFile(els.file.files[0]));
 
 // Typing a time yourself takes over from analysis that's still running.
 for (const input of [els.start, els.end]) {
@@ -1667,5 +1669,74 @@ coverEls.button.addEventListener("click", async () => {
   } finally {
     coverEls.button.disabled = false;
     els.go.disabled = false;
+  }
+});
+
+// ---- YouTube links (only with the Reel Maker helper, server.py) ----
+// When the app is opened through the helper (e.g. http://localhost:8765 on a tablet running it in
+// Termux), the helper can download a link with yt-dlp. On the normal website there's no helper, so the
+// link box stays hidden.
+const linkEls = {
+  row: document.getElementById("linkRow"),
+  input: document.getElementById("linkUrl"),
+  button: document.getElementById("linkGo"),
+  note: document.getElementById("linkNote"),
+  bar: document.getElementById("linkProgress"),
+};
+
+(async () => {
+  try {
+    const res = await fetch("/api/health", { cache: "no-store" });
+    if (!res.ok) return;
+    const health = await res.json();
+    if (!health.ok) return;
+    linkEls.row.hidden = false;
+    dlog("info", `Helper found: yt-dlp ${health.ytdlp || "missing"}, ffmpeg ${health.ffmpeg ? "yes" : "missing"}, up to ${health.quality}p, ${health.maxMinutes} min`);
+    if (!health.ytdlp) linkEls.note.textContent = "The helper can't download yet: run  pip install -U yt-dlp  in Termux and restart it.";
+  } catch {
+    // no helper: nothing to show
+  }
+})();
+
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+linkEls.button.addEventListener("click", async () => {
+  const url = linkEls.input.value.trim();
+  if (!url) return (linkEls.note.textContent = "Paste a YouTube link first.");
+  linkEls.button.disabled = true;
+  linkEls.bar.hidden = false;
+  linkEls.bar.value = 0;
+  try {
+    const start = await fetch("/api/fetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const started = await start.json();
+    if (!start.ok) throw new Error(started.error || `the helper said ${start.status}`);
+    linkEls.note.textContent = "Starting the download…";
+    let job;
+    for (;;) {
+      await pause(1000);
+      job = await (await fetch(`/api/job/${started.id}`, { cache: "no-store" })).json();
+      if (job.status === "error") throw new Error(job.error);
+      linkEls.bar.value = (job.percent || 0) / 100;
+      if (job.status === "downloading") linkEls.note.textContent = `Downloading${job.title ? ` "${job.title}"` : ""}… ${Math.round(job.percent)}%`;
+      if (job.status === "joining") linkEls.note.textContent = "Joining the picture and sound…";
+      if (job.status === "done") break;
+    }
+    linkEls.note.textContent = "Loading the video…";
+    const blob = await (await fetch(`/api/file/${started.id}`)).blob();
+    const safe = (job.title || "video").replace(/[\\/:*?"<>|]+/g, " ").trim().slice(0, 80) || "video";
+    useVideoFile(new File([blob], `${safe}.mp4`, { type: "video/mp4" }));
+    if (job.title && !els.title.value.trim()) els.title.value = job.title.slice(0, 60);
+    linkEls.bar.value = 1;
+    linkEls.note.textContent = `Loaded "${job.title}" (${(blob.size / 1048576).toFixed(0)} MB).`;
+    dlog("info", `Link loaded: ${job.title} (${(blob.size / 1048576).toFixed(1)} MB)`);
+  } catch (err) {
+    linkEls.note.textContent = `Couldn't get the video: ${err.message}`;
+    dlog("warn", `Link download failed: ${err.message}`);
+  } finally {
+    linkEls.button.disabled = false;
   }
 });

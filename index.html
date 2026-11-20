@@ -42,6 +42,18 @@
         <span class="upload-sub">MP4, MOV and other phone videos</span>
         <input id="file" type="file" accept="video/*" />
       </label>
+      <div id="linkRow" class="link-row" hidden>
+        <div class="or"><span>or</span></div>
+        <div class="link-input">
+          <input id="linkUrl" type="url" inputmode="url" placeholder="Paste a YouTube link" autocomplete="off" />
+          <button id="linkGo" type="button" class="button primary">
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Get video</span>
+          </button>
+        </div>
+        <progress id="linkProgress" value="0" max="1" hidden></progress>
+        <p id="linkNote" class="help" role="status">Downloaded by the Reel Maker helper on this device. Only use videos you have permission to use.</p>
+      </div>
       <video id="preview" controls playsinline></video>
       <p class="chips"><span class="chip">Length <strong><span id="duration">–</span> s</strong></span></p>
     </section>

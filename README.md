@@ -32,6 +32,10 @@ A webpage that turns a landscape performance video into a polished vertical 1080
 - **Clip volume:** a 0-100% slider for the video's own sound. 0% mutes it, for example to keep only the music.
 - **Vocal-friendly audio**: fades, light compression, and loudness normalization to about −14 LUFS, the level most platforms expect.
 
+## YouTube links (with the helper)
+
+Browsers can't download YouTube videos, so the app can't take a link by itself. `server.py` is a small helper that runs on a tablet (in Termux) or a computer. It downloads links with yt-dlp and opens Reel Maker at `http://localhost:8765` with a **Paste a YouTube link** box. See [TABLET.md](TABLET.md) for the setup. Only use videos you have permission to use.
+
 ## Run it locally
 
 From this folder:
@@ -109,5 +113,6 @@ Long lines wrap onto two lines automatically, and shrink a little if they still 
 - `app.js`: browser glue: file input, face tracking, the ffmpeg engine, and the download.
 - `fonts/Poppins-Bold.ttf`: caption font (SIL Open Font License).
 - `test/`: tests for `editor.js`.
+- `server.py`: the optional helper for YouTube links (Python and yt-dlp). See TABLET.md.
 - `vercel.json`: serves the `/fast` test page with the headers the multi-threaded engine needs.
 - `vendor/`: the ffmpeg.wasm wrapper, served from this site because browsers won't start its worker from a CDN. See `vendor/README.md`.

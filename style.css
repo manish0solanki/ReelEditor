@@ -709,3 +709,33 @@ progress::-moz-progress-bar { background: var(--gradient); border-radius: 999px;
 .cover .button { padding: 8px 6px; font-size: 0.8rem; width: 100%; }
 
 .cover .button svg { font-size: 1rem; }
+
+/* ---- YouTube link (with the helper) ------------------------------------------------------- */
+.link-row { margin-top: 14px; }
+
+.link-row .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.82rem; margin-bottom: 12px; }
+
+.link-row .or::before, .link-row .or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+.link-input { display: flex; gap: 8px; }
+
+.link-input input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 11px 12px;
+  outline: none;
+}
+
+.link-input input:focus { border-color: var(--accent); background: var(--surface); }
+
+.link-input .button { padding: 11px 14px; white-space: nowrap; }
+
+.link-row progress { margin-top: 10px; }
+
+.link-row .help { margin: 8px 0 0; }
