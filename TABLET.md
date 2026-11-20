@@ -47,6 +47,8 @@ To stop the helper, press **Ctrl+C** in Termux (on Termux's extra keys row: CTRL
 
 ## Good to know
 
+- **Format:** the helper asks YouTube for H.264 video, which the app can read. If YouTube only offers
+  AV1 (which the app can't read), the helper converts it on the tablet first; that takes a few minutes.
 - **Quality:** downloads are 720p by default, which is easier on memory when the app builds the
   reel. For 1080p: `python server.py --quality 1080`.
 - **Length limit:** videos up to 60 minutes. Change it with `--max-minutes 120`.

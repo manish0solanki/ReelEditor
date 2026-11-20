@@ -202,8 +202,15 @@ function stopTimer(ok) {
   document.title = ok ? `Done · ${PAGE_TITLE}` : PAGE_TITLE;
 }
 
+// Set when the engine meets AV1 video (YouTube sends it often), which it can't decode.
+let unreadableCodec = null;
+
 function onEngineLog({ message }) {
   lastLogAt = performance.now();
+  // ffmpeg counts repeats of the same warning on one updating line; that floods the log.
+  if (/Last message repeated/.test(message)) return;
+  // This engine build has no AV1 decoder (it reads H.264, HEVC, VP8 and VP9).
+  if (/\[av1 @|Video: av1\b/.test(message)) unreadableCodec = "av1";
   dlog("ffmpeg", message);
   if (!timer.encoding) return;
   const t = parseEncodedTime(message);
@@ -1151,6 +1158,7 @@ async function renderReel({ startT, duration, captions, title, fadeIn = 0.6, fad
       for (const f of textFiles) await ffmpeg.writeFile(f.name, new TextEncoder().encode(f.text));
 
       startEncodingTimer();
+      unreadableCodec = null;
       const exitCode = await execWatched(args);
       if (exitCode !== 0) throw new Error(`ffmpeg exited with code ${exitCode}`);
       return ffmpeg.readFile("output.mp4");
@@ -1240,7 +1248,7 @@ function addClipCard(index, moment, blob, notes, error) {
   const p = document.createElement("p");
   card.append(h, p);
   if (error) {
-    p.textContent = `Couldn't make this clip: ${String(error.message || error).replace(/\.+$/, "")}.`;
+    p.textContent = `Couldn't make this clip: ${explainError(error)}.`;
   } else {
     const url = URL.createObjectURL(blob);
     clipUrls.push(url);
@@ -1287,6 +1295,11 @@ async function runBatch() {
   }
   const { windows, features, duration } = analysis;
   const b = findSongBounds(windows, duration, { leadIn: LEAD_IN });
+  // Look only inside the song when it has room for every clip; otherwise (a talk, an interview,
+  // or a short song in a long video) search the whole video.
+  const songRoom = b.found ? b.end - b.start : 0;
+  const useSong = b.found && songRoom >= count * length * 1.2;
+  if (b.found && !useSong) dlog("info", `Song found (${formatTime(b.start)}-${formatTime(b.end)}) is too short for ${count} clips; using the whole video`);
   const picked = findBestMoments({
     features,
     windows,
@@ -1294,7 +1307,7 @@ async function runBatch() {
     duration,
     length,
     count,
-    song: b.found ? { start: b.start, end: b.end } : null,
+    song: useSong ? { start: b.start, end: b.end } : null,
   }).sort((x, y) => x.start - y.start);
   dlog("info", `Clips: ${picked.map((m) => `${formatTime(m.start)}-${formatTime(m.end)} (${m.score})`).join(", ")}`);
   if (!picked.length) return showError("Couldn't find good moments in this video. Set Start and End yourself and make one reel.");
@@ -1358,6 +1371,11 @@ async function runBatch() {
       } catch (err) {
         console.error(err);
         addClipCard(i, m, null, [], err);
+        // The same video will fail the same way for every clip: stop here.
+        if (unreadableCodec) {
+          stopTimer(false);
+          break;
+        }
       } finally {
         stopTimer(ok);
       }
@@ -1382,10 +1400,21 @@ async function runBatch() {
   if (made < picked.length) openPanel();
 }
 
+// Turns an engine failure into something to act on.
+function explainError(err) {
+  const msg = String(err?.message || err).replace(/\.+$/, "");
+  if (unreadableCodec && /exited with code/.test(msg)) {
+    return `this video is in AV1 format, which the app's video engine can't read. ` +
+      "For YouTube links, update the helper on the tablet (run the curl -O …/server.py command again): it now downloads H.264, which works. " +
+      `For a file from your phone, convert it to H.264 MP4 first`;
+  }
+  return msg;
+}
+
 function showRenderError(err) {
   console.error(err);
   openPanel();
-  const msg = String(err?.message || err).replace(/\.+$/, "");
+  const msg = explainError(err);
   const memory = /memory|out of bounds|abort|exited with code/i.test(msg);
   setStatus(
     `Something went wrong: ${msg}.${memory ? " Try a shorter clip or a smaller file." : ""} ` +
@@ -1960,6 +1989,7 @@ linkEls.button.addEventListener("click", async () => {
       linkEls.bar.value = (job.percent || 0) / 100;
       if (job.status === "downloading") linkEls.note.textContent = `Downloading${job.title ? ` "${job.title}"` : ""}… ${Math.round(job.percent)}%`;
       if (job.status === "joining") linkEls.note.textContent = "Joining the picture and sound…";
+      else if (job.status === "converting") linkEls.note.textContent = "Converting the video to a format the app can read (AV1 to H.264)… this can take a few minutes.";
       if (job.status === "done") break;
     }
     linkEls.note.textContent = "Loading the video…";

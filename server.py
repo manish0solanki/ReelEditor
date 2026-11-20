@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import threading
 import time
 import urllib.error
@@ -92,9 +93,12 @@ def download(job_id, url):
     height = ARGS.quality
     options = {
         # MP4 video and M4A audio up to the chosen height, joined into one MP4 (needs ffmpeg).
+        # H.264 (avc1) first: the app's video engine can't decode AV1, which YouTube often serves.
         "format": (
-            f"bv*[height<={height}][ext=mp4]+ba[ext=m4a]/"
-            f"b[height<={height}][ext=mp4]/bv*[height<={height}]+ba/b[height<={height}]/b"
+            f"bv*[height<={height}][vcodec^=avc1]+ba[ext=m4a]/"
+            f"b[height<={height}][vcodec^=avc1]/"
+            f"bv*[height<={height}][vcodec!^=av01]+ba/b[height<={height}][vcodec!^=av01]/"
+            f"bv*[height<={height}]+ba/b[height<={height}]/b"
         ),
         "merge_output_format": "mp4",
         "outtmpl": os.path.join(folder, "video.%(ext)s"),
@@ -119,12 +123,48 @@ def download(job_id, url):
         if not files:
             raise ValueError("the download didn't produce a file")
         path = os.path.join(folder, sorted(files, key=lambda f: os.path.getsize(os.path.join(folder, f)))[-1])
+        path = make_readable(path, job)
         job.update(status="done", percent=100, file=path, size=os.path.getsize(path))
         print(f"[done] {job['title']} ({job['size'] / 1048576:.1f} MB)")
     except Exception as err:  # noqa: BLE001 - every failure is reported to the app
         message = strip_ansi(err).replace("ERROR: ", "")
         job.update(status="error", error=message)
         print(f"[error] {url}: {message}")
+
+
+def video_codec(path):
+    """The first video stream's codec name (e.g. "h264", "av1"), or None if ffprobe isn't there."""
+    if not shutil.which("ffprobe"):
+        return None
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name",
+             "-of", "default=nw=1:nk=1", path],
+            capture_output=True, text=True, timeout=60,
+        )
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def make_readable(path, job):
+    """Converts AV1 video to H.264 (the app can't decode AV1). Returns the file to serve."""
+    if video_codec(path) != "av1":
+        return path
+    if not shutil.which("ffmpeg"):
+        raise ValueError("YouTube only offered AV1 video, and converting it needs ffmpeg: run  pkg install ffmpeg")
+    job.update(status="converting", percent=99)
+    print("[convert] AV1 to H.264 (the app can't read AV1); this takes a while")
+    out = os.path.join(os.path.dirname(path), "video-h264.mp4")
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", path, "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", out],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"converting the AV1 video failed: {result.stderr.strip()[-300:]}")
+    os.remove(path)
+    return out
 
 
 def clean_up():
@@ -193,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
         if not allowed_url(url):
             return self.send_json({"error": "That doesn't look like a YouTube link."}, 400)
         with JOBS_LOCK:
-            if any(j["status"] in ("starting", "downloading", "joining") for j in JOBS.values()):
+            if any(j["status"] in ("starting", "downloading", "joining", "converting") for j in JOBS.values()):
                 return self.send_json({"error": "Another download is still running. Try again when it's done."}, 409)
             job_id = uuid.uuid4().hex
             JOBS[job_id] = {
